@@ -16,6 +16,8 @@ import stat
 import time
 import traceback
 
+import pytest
+
 import psutil
 from psutil import AIX
 from psutil import BSD
@@ -24,7 +26,6 @@ from psutil import LINUX
 from psutil import MACOS
 from psutil import NETBSD
 from psutil import OPENBSD
-from psutil import OSX
 from psutil import POSIX
 from psutil import WINDOWS
 
@@ -33,11 +34,12 @@ from . import PYTEST_PARALLEL
 from . import VALID_PROC_STATUSES
 from . import PsutilTestCase
 from . import check_connection_ntuple
+from . import check_fun_type_hints
+from . import check_ntuple_type_hints
 from . import create_sockets
 from . import is_namedtuple
 from . import is_win_secure_system_proc
 from . import process_namespace
-from . import pytest
 
 # Cuts the time in half, but (e.g.) on macOS the process pool stays
 # alive after join() (multiprocessing bug?), messing up other tests.
@@ -85,10 +87,15 @@ def proc_info(pid):
         # check_exception() in case of NSP.
         for fun, fun_name in ns.iter(ns.getters, clear_cache=False):
             try:
-                info[fun_name] = fun()
+                ret = fun()
             except psutil.Error as exc:
                 check_exception(exc, proc, name, ppid)
                 continue
+            else:
+                check_fun_type_hints(fun, ret)
+                if is_namedtuple(ret):
+                    check_ntuple_type_hints(ret)
+                info[fun_name] = ret
         do_wait()
         return info
 
@@ -139,13 +146,10 @@ class TestFetchAllProcesses(PsutilTestCase):
                     meth(value, info)
                 except Exception:  # noqa: BLE001
                     s = '\n' + '=' * 70 + '\n'
-                    s += (
-                        "FAIL: name=test_{}, pid={}, ret={}\ninfo={}\n".format(
-                            name,
-                            info['pid'],
-                            repr(value),
-                            info,
-                        )
+                    s += "FAIL: name=test_{}, pid={}, ret={}\n\n".format(
+                        name,
+                        info['pid'],
+                        repr(value),
                     )
                     s += '-' * 70
                     s += f"\n{traceback.format_exc()}"
@@ -216,13 +220,11 @@ class TestFetchAllProcesses(PsutilTestCase):
         time.strftime("%Y %m %d %H:%M:%S", time.localtime(ret))
 
     def uids(self, ret, info):
-        assert is_namedtuple(ret)
         for uid in ret:
             assert isinstance(uid, int)
             assert uid >= 0
 
     def gids(self, ret, info):
-        assert is_namedtuple(ret)
         # note: testing all gids as above seems not to be reliable for
         # gid == 30 (nodoby); not sure why.
         for gid in ret:
@@ -242,7 +244,6 @@ class TestFetchAllProcesses(PsutilTestCase):
         assert ret in VALID_PROC_STATUSES
 
     def io_counters(self, ret, info):
-        assert is_namedtuple(ret)
         for field in ret:
             assert isinstance(field, int)
             if field != -1:
@@ -275,7 +276,6 @@ class TestFetchAllProcesses(PsutilTestCase):
     def threads(self, ret, info):
         assert isinstance(ret, list)
         for t in ret:
-            assert is_namedtuple(t)
             assert t.id >= 0
             assert t.user_time >= 0
             assert t.system_time >= 0
@@ -283,7 +283,6 @@ class TestFetchAllProcesses(PsutilTestCase):
                 assert isinstance(field, (int, float))
 
     def cpu_times(self, ret, info):
-        assert is_namedtuple(ret)
         for n in ret:
             assert isinstance(n, float)
             assert n >= 0
@@ -303,31 +302,16 @@ class TestFetchAllProcesses(PsutilTestCase):
         assert ret in list(range(psutil.cpu_count()))
 
     def memory_info(self, ret, info):
-        assert is_namedtuple(ret)
-        for value in ret:
-            assert isinstance(value, int)
-            assert value >= 0
-        if WINDOWS:
-            assert ret.peak_wset >= ret.wset
-            assert ret.peak_paged_pool >= ret.paged_pool
-            assert ret.peak_nonpaged_pool >= ret.nonpaged_pool
-            assert ret.peak_pagefile >= ret.pagefile
+        self.check_proc_memory(ret)
 
-    def memory_full_info(self, ret, info):
-        assert is_namedtuple(ret)
-        total = psutil.virtual_memory().total
+    def memory_info_ex(self, ret, info):
+        self.check_proc_memory(ret)
+
+    def memory_footprint(self, ret, info):
         for name in ret._fields:
             value = getattr(ret, name)
             assert isinstance(value, int)
             assert value >= 0
-            if LINUX or (OSX and name in {'vms', 'data'}):
-                # On Linux there are processes (e.g. 'goa-daemon') whose
-                # VMS is incredibly high for some reason.
-                continue
-            assert value <= total, name
-
-        if LINUX:
-            assert ret.pss >= ret.uss
 
     def open_files(self, ret, info):
         assert isinstance(ret, list)
@@ -363,7 +347,6 @@ class TestFetchAllProcesses(PsutilTestCase):
         with create_sockets():
             assert len(ret) == len(set(ret))
             for conn in ret:
-                assert is_namedtuple(conn)
                 check_connection_ntuple(conn)
 
     def cwd(self, ret, info):
@@ -405,8 +388,10 @@ class TestFetchAllProcesses(PsutilTestCase):
 
     def memory_maps(self, ret, info):
         for nt in ret:
-            assert isinstance(nt.addr, str)
-            assert isinstance(nt.perms, str)
+            if hasattr(nt, "addr"):
+                assert isinstance(nt.addr, str)
+            if hasattr(nt, "perms"):
+                assert isinstance(nt.perms, str)
             assert isinstance(nt.path, str)
             for fname in nt._fields:
                 value = getattr(nt, fname)
@@ -432,6 +417,12 @@ class TestFetchAllProcesses(PsutilTestCase):
         assert isinstance(ret, int)
         assert ret >= 0
 
+    def page_faults(self, ret, info):
+        assert isinstance(ret.minor, int)
+        assert isinstance(ret.major, int)
+        assert ret.minor >= 0
+        assert ret.major >= 0
+
     def nice(self, ret, info):
         assert isinstance(ret, int)
         if POSIX:
@@ -446,7 +437,6 @@ class TestFetchAllProcesses(PsutilTestCase):
             assert isinstance(ret, enum.IntEnum)
 
     def num_ctx_switches(self, ret, info):
-        assert is_namedtuple(ret)
         for value in ret:
             assert isinstance(value, int)
             assert value >= 0

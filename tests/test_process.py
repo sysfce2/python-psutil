@@ -41,14 +41,15 @@ from psutil._common import open_text
 from . import CI_TESTING
 from . import GITHUB_ACTIONS
 from . import GLOBAL_TIMEOUT
-from . import HAS_CPU_AFFINITY
-from . import HAS_ENVIRON
-from . import HAS_IONICE
-from . import HAS_MEMORY_MAPS
+from . import HAS_PROC_CPU_AFFINITY
 from . import HAS_PROC_CPU_NUM
+from . import HAS_PROC_ENVIRON
 from . import HAS_PROC_IO_COUNTERS
-from . import HAS_RLIMIT
-from . import HAS_THREADS
+from . import HAS_PROC_IONICE
+from . import HAS_PROC_MEMORY_FOOTPRINT
+from . import HAS_PROC_MEMORY_MAPS
+from . import HAS_PROC_RLIMIT
+from . import HAS_PROC_THREADS
 from . import MACOS_11PLUS
 from . import PYPY
 from . import PYTHON_EXE
@@ -224,7 +225,7 @@ class TestProcess(PsutilTestCase):
             assert io2[i] >= 0
             assert io2[i] >= 0
 
-    @pytest.mark.skipif(not HAS_IONICE, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_IONICE, reason="not supported")
     @pytest.mark.skipif(not LINUX, reason="linux only")
     def test_ionice_linux(self):
         def cleanup(init):
@@ -269,7 +270,7 @@ class TestProcess(PsutilTestCase):
         ):
             p.ionice(value=1)
 
-    @pytest.mark.skipif(not HAS_IONICE, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_IONICE, reason="not supported")
     @pytest.mark.skipif(
         not WINDOWS, reason="not supported on this win version"
     )
@@ -299,7 +300,7 @@ class TestProcess(PsutilTestCase):
         with pytest.raises(ValueError, match="is not a valid priority"):
             p.ionice(psutil.IOPRIO_HIGH + 1)
 
-    @pytest.mark.skipif(not HAS_RLIMIT, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_RLIMIT, reason="not supported")
     def test_rlimit_get(self):
         import resource
 
@@ -323,7 +324,7 @@ class TestProcess(PsutilTestCase):
                 assert ret[0] >= -1
                 assert ret[1] >= -1
 
-    @pytest.mark.skipif(not HAS_RLIMIT, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_RLIMIT, reason="not supported")
     def test_rlimit_set(self):
         p = self.spawn_psproc()
         p.rlimit(psutil.RLIMIT_NOFILE, (5, 5))
@@ -336,7 +337,7 @@ class TestProcess(PsutilTestCase):
         with pytest.raises(ValueError):
             p.rlimit(psutil.RLIMIT_NOFILE, (5, 5, 5))
 
-    @pytest.mark.skipif(not HAS_RLIMIT, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_RLIMIT, reason="not supported")
     def test_rlimit(self):
         p = psutil.Process()
         testfn = self.get_testfn()
@@ -355,7 +356,7 @@ class TestProcess(PsutilTestCase):
             p.rlimit(psutil.RLIMIT_FSIZE, (soft, hard))
             assert p.rlimit(psutil.RLIMIT_FSIZE) == (soft, hard)
 
-    @pytest.mark.skipif(not HAS_RLIMIT, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_RLIMIT, reason="not supported")
     def test_rlimit_infinity(self):
         # First set a limit, then re-set it by specifying INFINITY
         # and assume we overridden the previous limit.
@@ -370,7 +371,7 @@ class TestProcess(PsutilTestCase):
             p.rlimit(psutil.RLIMIT_FSIZE, (soft, hard))
             assert p.rlimit(psutil.RLIMIT_FSIZE) == (soft, hard)
 
-    @pytest.mark.skipif(not HAS_RLIMIT, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_RLIMIT, reason="not supported")
     def test_rlimit_infinity_value(self):
         # RLIMIT_FSIZE should be RLIM_INFINITY, which will be a really
         # big number on a platform with large file support.  On these
@@ -406,7 +407,7 @@ class TestProcess(PsutilTestCase):
         p = psutil.Process()
         assert p.num_handles() > 0
 
-    @pytest.mark.skipif(not HAS_THREADS, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_THREADS, reason="not supported")
     def test_threads(self):
         p = psutil.Process()
         if OPENBSD:
@@ -428,7 +429,7 @@ class TestProcess(PsutilTestCase):
 
     @retry_on_failure()
     @skip_on_access_denied(only_if=MACOS)
-    @pytest.mark.skipif(not HAS_THREADS, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_THREADS, reason="not supported")
     def test_threads_2(self):
         p = self.spawn_psproc()
         if OPENBSD:
@@ -448,6 +449,7 @@ class TestProcess(PsutilTestCase):
     @retry_on_failure()
     def test_memory_info(self):
         p = psutil.Process()
+        self.check_proc_memory(p.memory_info())
 
         # step 1 - get a base value to compare our results
         rss1, vms1 = p.memory_info()[:2]
@@ -467,32 +469,79 @@ class TestProcess(PsutilTestCase):
         assert percent2 > percent1
         del memarr
 
-        if WINDOWS:
-            mem = p.memory_info()
-            assert mem.rss == mem.wset
-            assert mem.vms == mem.pagefile
-
-        mem = p.memory_info()
+    def test_memory_info_ex(self):
+        p = psutil.Process()
+        mem = p.memory_info_ex()
+        self.check_proc_memory(mem)
+        total = psutil.virtual_memory().total
         for name in mem._fields:
-            assert getattr(mem, name) >= 0
+            if name != "vms":
+                value = getattr(mem, name)
+                assert value <= total
+
+    def test_memory_info_ex_fields_order(self):
+        mem = psutil.Process().memory_info_ex()
+        common = ("rss", "vms")
+        assert mem._fields[:2] == common
+        if LINUX:
+            assert mem._fields[2:] == (
+                "shared",
+                "text",
+                "data",
+                "peak_rss",
+                "peak_vms",
+                "rss_anon",
+                "rss_file",
+                "rss_shmem",
+                "swap",
+                "hugetlb",
+            )
+        elif MACOS:
+            assert mem._fields[2:] == (
+                "peak_rss",
+                "rss_anon",
+                "rss_file",
+                "wired",
+                "compressed",
+                "phys_footprint",
+            )
+        elif WINDOWS:
+            assert mem._fields[2:] == (
+                "peak_rss",
+                "peak_vms",
+                "virtual",
+                "peak_virtual",
+                "paged_pool",
+                "nonpaged_pool",
+                "peak_paged_pool",
+                "peak_nonpaged_pool",
+            )
+        else:
+            assert mem._fields == psutil.Process().memory_info_ex()._fields
+
+    @pytest.mark.skipif(not HAS_PROC_MEMORY_FOOTPRINT, reason="not supported")
+    def test_memory_footprint(self):
+        p = psutil.Process()
+        mem = p.memory_footprint()
+        self.check_proc_memory(mem)
 
     def test_memory_full_info(self):
         p = psutil.Process()
-        total = psutil.virtual_memory().total
-        mem = p.memory_full_info()
-        for name in mem._fields:
-            value = getattr(mem, name)
-            assert value >= 0
-            if (name == "vms" and OSX) or LINUX:
-                continue
-            assert value <= total
-        if LINUX or WINDOWS or MACOS:
-            assert mem.uss >= 0
-        if LINUX:
-            assert mem.pss >= 0
-            assert mem.swap >= 0
+        with pytest.warns(DeprecationWarning):
+            mem = p.memory_full_info()
+        # not returned by default
+        assert 'memory_full_info' not in p.as_dict()
+        # but explicitly requesting it should work
+        with pytest.warns(DeprecationWarning):
+            d = p.as_dict(attrs=['memory_full_info'])
+        assert 'memory_full_info' in d
+        # fields should be memory_info() + memory_footprint() (if avail)
+        expected = p.memory_info()._fields
+        if HAS_PROC_MEMORY_FOOTPRINT:
+            expected += p.memory_footprint()._fields
+        assert mem._fields == expected
 
-    @pytest.mark.skipif(not HAS_MEMORY_MAPS, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_MEMORY_MAPS, reason="not supported")
     def test_memory_maps(self):
         p = psutil.Process()
         maps = p.memory_maps()
@@ -541,7 +590,7 @@ class TestProcess(PsutilTestCase):
                     assert isinstance(value, int)
                     assert value >= 0, value
 
-    @pytest.mark.skipif(not HAS_MEMORY_MAPS, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_MEMORY_MAPS, reason="not supported")
     def test_memory_maps_lists_lib(self):
         # Make sure a newly loaded shared lib is listed.
         p = psutil.Process()
@@ -560,6 +609,12 @@ class TestProcess(PsutilTestCase):
             p.memory_percent(memtype="?!?")
         if LINUX or MACOS or WINDOWS:
             p.memory_percent(memtype='uss')
+
+    def test_page_faults(self):
+        p = psutil.Process()
+        pfaults = p.page_faults()
+        assert pfaults.minor > 0
+        assert pfaults.major >= 0
 
     def test_is_running(self):
         p = self.spawn_psproc()
@@ -814,7 +869,7 @@ class TestProcess(PsutilTestCase):
         p = self.spawn_psproc(cmd)
         call_until(lambda: p.cwd() == os.path.dirname(os.getcwd()))
 
-    @pytest.mark.skipif(not HAS_CPU_AFFINITY, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_CPU_AFFINITY, reason="not supported")
     def test_cpu_affinity(self):
         p = psutil.Process()
         initial = p.cpu_affinity()
@@ -853,7 +908,7 @@ class TestProcess(PsutilTestCase):
         p.cpu_affinity(set(all_cpus))
         p.cpu_affinity(tuple(all_cpus))
 
-    @pytest.mark.skipif(not HAS_CPU_AFFINITY, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_CPU_AFFINITY, reason="not supported")
     def test_cpu_affinity_errs(self):
         p = self.spawn_psproc()
         invalid_cpu = [len(psutil.cpu_times(percpu=True)) + 10]
@@ -866,7 +921,7 @@ class TestProcess(PsutilTestCase):
         with pytest.raises(ValueError):
             p.cpu_affinity([0, -1])
 
-    @pytest.mark.skipif(not HAS_CPU_AFFINITY, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_CPU_AFFINITY, reason="not supported")
     def test_cpu_affinity_all_combinations(self):
         p = psutil.Process()
         initial = p.cpu_affinity()
@@ -1384,7 +1439,7 @@ class TestProcess(PsutilTestCase):
             assert 0 in psutil.pids()
             assert psutil.pid_exists(0)
 
-    @pytest.mark.skipif(not HAS_ENVIRON, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_ENVIRON, reason="not supported")
     def test_environ(self):
         def clean_dict(d):
             exclude = {"PLAT", "HOME"}
@@ -1411,7 +1466,7 @@ class TestProcess(PsutilTestCase):
         if not OSX and GITHUB_ACTIONS:
             assert d1 == d2
 
-    @pytest.mark.skipif(not HAS_ENVIRON, reason="not supported")
+    @pytest.mark.skipif(not HAS_PROC_ENVIRON, reason="not supported")
     @pytest.mark.skipif(not POSIX, reason="POSIX only")
     @pytest.mark.skipif(
         MACOS_11PLUS,

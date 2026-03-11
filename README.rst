@@ -87,7 +87,7 @@ psutil currently supports the following platforms:
 - **Sun Solaris**
 - **AIX**
 
-Supported Python versions are cPython 3.6+ and `PyPy <https://pypy.org/>`__.
+Supported Python versions are cPython 3.7+ and `PyPy <https://pypy.org/>`__.
 Latest psutil version supporting Python 2.7 is
 `psutil 6.1.1 <https://pypi.org/project/psutil/6.1.1/>`__.
 
@@ -286,7 +286,7 @@ Process management
     >>>
     >>> p = psutil.Process(7055)
     >>> p
-    psutil.Process(pid=7055, name='python3', status='running', started='09:04:44')
+    psutil.Process(pid=7055, name='python3', status=<ProcessStatus.STATUS_RUNNING: 'running'>, started='09:04:44')
     >>> p.pid
     7055
     >>> p.name()
@@ -301,17 +301,17 @@ Process management
     >>> p.ppid()
     7054
     >>> p.parent()
-    psutil.Process(pid=4699, name='bash', status='sleeping', started='09:06:44')
+    psutil.Process(pid=4699, name='bash', status=<ProcessStatus.STATUS_SLEEPING: 'sleeping'>, started='09:06:44')
     >>> p.parents()
     [psutil.Process(pid=4699, name='bash', started='09:06:44'),
-     psutil.Process(pid=4689, name='gnome-terminal-server', status='sleeping', started='0:06:44'),
-     psutil.Process(pid=1, name='systemd', status='sleeping', started='05:56:55')]
+     psutil.Process(pid=4689, name='gnome-terminal-server', status=<ProcessStatus.STATUS_SLEEPING: 'sleeping'>, started='0:06:44'),
+     psutil.Process(pid=1, name='systemd', status=<ProcessStatus.STATUS_SLEEPING: 'sleeping'>, started='05:56:55')]
     >>> p.children(recursive=True)
-    [psutil.Process(pid=29835, name='python3', status='sleeping', started='11:45:38'),
-     psutil.Process(pid=29836, name='python3', status='waking', started='11:43:39')]
+    [psutil.Process(pid=29835, name='python3', status=<ProcessStatus.STATUS_SLEEPING: 'sleeping'>, started='11:45:38'),
+     psutil.Process(pid=29836, name='python3', status=<ProcessStatus.STATUS_WAKING: 'waking'>, started='11:43:39')]
     >>>
     >>> p.status()
-    'running'
+    <ProcessStatus.STATUS_RUNNING: 'running'>
     >>> p.create_time()
     1267551141.5019531
     >>> p.terminal()
@@ -335,9 +335,11 @@ Process management
     1
     >>>
     >>> p.memory_info()
-    pmem(rss=10915840, vms=67608576, shared=3313664, text=2310144, lib=0, data=7262208, dirty=0)
-    >>> p.memory_full_info()  # "real" USS memory usage (Linux, macOS, Win only)
-    pfullmem(rss=10199040, vms=52133888, shared=3887104, text=2867200, lib=0, data=5967872, dirty=0, uss=6545408, pss=6872064, swap=0)
+    pmem(rss=3164160, vms=4410163, shared=897433, text=302694, data=2422374)
+    >>> p.memory_info_ex()
+    pmem_ex(rss=3164160, vms=4410163, shared=897433, text=302694, data=2422374, peak_rss=4172190, peak_vms=6399001, rss_anon=2266726, rss_file=897433, rss_shmem=0, swap=0, hugetlb=0)
+    >>> p.memory_footprint()  # "real" USS memory usage
+    pfootprint(uss=2355200, pss=2483712, swap=0)
     >>> p.memory_percent()
     0.7823
     >>> p.memory_maps()
@@ -347,6 +349,9 @@ Process management
      pmmap_grouped(path='[stack]', rss=2465792, size=2494464, pss=2465792, shared_clean=0, shared_dirty=0, private_clean=0, private_dirty=2465792, referenced=2277376, anonymous=2465792, swap=0),
      ...]
     >>>
+    >>> p.page_faults()
+    ppagefaults(minor=5905, major=3)
+    >>>
     >>> p.io_counters()
     pio(read_count=478001, write_count=59371, read_bytes=700416, write_bytes=69632, read_chars=456232, write_chars=517543)
     >>>
@@ -355,8 +360,8 @@ Process management
      popenfile(path='/var/log/monit.log', fd=4, position=235542, mode='a', flags=33793)]
     >>>
     >>> p.net_connections(kind='tcp')
-    [pconn(fd=115, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=48776), raddr=addr(ip='93.186.135.91', port=80), status='ESTABLISHED'),
-     pconn(fd=117, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=43761), raddr=addr(ip='72.14.234.100', port=80), status='CLOSING')]
+    [pconn(fd=115, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=48776), raddr=addr(ip='93.186.135.91', port=80), status=<ConnectionStatus.CONN_ESTABLISHED: 'ESTABLISHED'>),
+     pconn(fd=117, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=43761), raddr=addr(ip='72.14.234.100', port=80), status=<ConnectionStatus.CONN_CLOSING: 'CLOSING'>)]
     >>>
     >>> p.threads()
     [pthread(id=5234, user_time=22.5, system_time=9.2891),
@@ -375,7 +380,7 @@ Process management
     >>>
     >>> p.ionice(psutil.IOPRIO_CLASS_IDLE)  # IO priority (Win and Linux only)
     >>> p.ionice()
-    pionice(ioclass=<IOPriority.IOPRIO_CLASS_IDLE: 3>, value=0)
+    pionice(ioclass=<ProcessIOPriority.IOPRIO_CLASS_IDLE: 3>, value=0)
     >>>
     >>> p.rlimit(psutil.RLIMIT_NOFILE, (5, 5))  # set resource limits (Linux only)
     >>> p.rlimit(psutil.RLIMIT_NOFILE)
@@ -387,7 +392,7 @@ Process management
      ...}
     >>>
     >>> p.as_dict()
-    {'status': 'running', 'num_ctx_switches': pctxsw(voluntary=63, involuntary=1), 'pid': 5457, ...}
+    {'status': <ProcessStatus.STATUS_RUNNING: 'running'>, 'num_ctx_switches': pctxsw(voluntary=63, involuntary=1), 'pid': 5457, ...}
     >>> p.is_running()
     True
     >>> p.suspend()

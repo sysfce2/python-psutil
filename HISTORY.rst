@@ -1,5 +1,125 @@
 *Bug tracker at https://github.com/giampaolo/psutil/issues*
 
+8.0.0 (IN DEVELOPMENT)
+======================
+
+**Enhancements**
+
+- 1946_: add inline type hints to all public APIs in `psutil/__init__.py`.
+  Type checkers (mypy, pyright, etc.) can now statically verify code that
+  uses psutil. No runtime behavior is changed; the annotations are purely
+  informational.
+- 2729_: New `Process.page_faults()`_ method, returning a ``(minor, major)``
+  namedtuple.
+- 2745_: Drastically improve `virtual_memory()`_ docstring, which is now more
+  detailed, and includes a table with all the available metrics on each
+  platform.
+- 2731_, 2736_, 2723_, 2733_: Reorganization of process memory APIs.
+
+  - Add new `Process.memory_info_ex()`_ method, which extends
+    `Process.memory_info()`_ with platform-specific metrics:
+
+    - Linux: *peak_rss*, *peak_vms*, *rss_anon*, *rss_file*, *rss_shmem*,
+      *swap*, *hugetlb*
+    - macOS: *peak_rss*, *rss_anon*, *rss_file*, *wired*, *compressed*,
+      *phys_footprint*
+    - Windows: *virtual*, *peak_virtual*
+
+  - Add new `Process.memory_footprint()`_ method, which returns *uss*, *pss*
+    and *swap* metrics (what `Process.memory_full_info()`_ used to return,
+    which is now **deprecated**).
+
+  - `Process.memory_info()`_ named tuple changed:
+
+    - BSD: added *peak_rss*.
+
+    - Linux: *lib* and *dirty* removed (always 0 since Linux 2.6). Deprecated
+      aliases returning 0 and emitting `DeprecationWarning` are kept.
+
+    - macOS: *pfaults* and *pageins* removed with **no
+      backward-compataliases**. Use `Process.page_faults()`_ instead.
+
+    - Windows: eliminated old aliases: *wset* → *rss*, *peak_wset* →
+      *peak_rss*, *pagefile* / *private* → *vms*, *peak_pagefile* → *peak_vms*.
+      At the same time *paged_pool*, *nonpaged_pool*, *peak_paged_pool*,
+      *peak_nonpaged_pool* were moved to `Process.memory_info_ex()`_. All these
+      old names still work but raise `DeprecationWarning`.
+
+  - `Process.memory_full_info()`_ is **deprecated**. Use the new
+    `Process.memory_footprint()`_ instead.
+
+- 2747_: the field order of the named tuple returned by `cpu_times()`_ has been
+  normalized on all platforms, and the first 3 fields are now always  ``user,
+  system, idle``. See compatibility notes below.
+- 2751_: convert all named tuples in `psutil/_ntuples.py`_ from
+  ``collections.namedtuple`` to ``typing.NamedTuple`` classes with **type
+  annotations**. This makes the classes self-documenting, effectively turning
+  this module into a readable API reference.
+- 2753_: Introduce enum classes (`ProcessStatus`_, `ConnectionStatus`_,
+  `ProcessIOPriority`_, `ProcessPriority`_, `ProcessRlimit`_) grouping related
+  constants. The individual top-level constants (e.g.
+  ``psutil.STATUS_RUNNING``) remain the primary API, and are now aliases for
+  the corresponding enum members.
+- 2754_: standardize `sensors_battery()`_'s `percent` so that it returns a
+  `float` instead of `int` on all systems, not only Linux.
+- 2757_: split the documentation from a single-page HTML document into multiple
+  sub-sections. Sections now include separate pages for API reference,
+  installation, release timeline, FAQs, and more.
+
+**Bug fixes**
+
+- 2726_, [macOS]: `Process.num_ctx_switches()`_ return an unusual high number
+  due to a C type precision issue.
+- 2411_ [macOS]: `Process.cpu_times()`_ and `Process.cpu_percent()`_
+  calculation on macOS x86_64 (arm64 is fine) was highly inaccurate (41.67x
+  lower).
+- 2732_, [Linux]: net_if_duplex_speed: handle EBUSY from ioctl(SIOCETHTOOL).
+- 2744_, [NetBSD]: fix possible double `free()` in `swap_memory()`_.
+- 2746_, [FreeBSD]: `Process.memory_maps()`_, `rss` and `private` fields, are
+  erroneously reported in memory pages instead of bytes. Other platforms
+  (Linux, macOS, Windows) return bytes.
+
+**Compatibility notes**
+
+Changes that break backwards compatibility.
+
+- Dropped support for Python 3.6.
+
+Named tuples:
+
+- `cpu_times()`_:
+
+  - On Linux, macOS and BSD the field order of the returned named tuple
+    changed: ``user, system, idle`` are now always the first 3 fields on all
+    platforms, with platform-specific fields (e.g. ``nice``) following.
+    Positional access (e.g. ``cpu_times()[3]``) may silently return the wrong
+    field. Always use attribute access instead (e.g. ``cpu_times().idle``).
+
+- `Process.memory_info()`_:
+
+  - The returned named tuple changed size and field order.
+    Positional access (e.g. ``p.memory_info()[3]`` or ``a, b, c =
+    p.memory_info()``) may break or silently return the wrong field. Always use
+    attribute access instead (e.g. ``p.memory_info().rss``).
+
+Enums:
+
+- `Process.status()`_ now returns a :class:`psutil.ProcessStatus` enum member
+  instead of a plain ``str``. Since :class:`psutil.ProcessStatus` is a
+  ``StrEnum``, it compares equal to its string value (e.g.
+  ``p.status() == "running"`` still works), but ``repr()`` and ``type()``
+  differ. Use :data:`psutil.STATUS_RUNNING` and friends as before;
+  ``psutil.STATUS_RUNNING`` is now an alias for the enum member.
+
+- `net_connections()`_ and `Process.net_connections()`_: the ``status`` field
+  now returns a :class:`psutil.ConnectionStatus` enum member instead of a
+  plain ``str``. Same ``StrEnum`` compatibility rules as above apply.
+
+- ``RLIMIT_*`` / ``RLIM_*`` constants (Linux, FreeBSD): these are now members
+  of the :class:`psutil.ProcessRlimit` ``IntEnum`` instead of plain integers.
+  Since ``IntEnum`` compares equal to integers, existing code using them as
+  arguments to :meth:`Process.rlimit` is unaffected.
+
 7.2.3
 =====
 
@@ -191,7 +311,7 @@
   trigger a segfault.
 - 2604_, [Linux]: `virtual_memory()`_ "used" memory does not match recent
   versions of ``free`` CLI utility.  (patch by Isaac K. Ko)
-- 2605_, [Linux]: `psutil.sensors_battery()` reports a negative amount for
+- 2605_, [Linux]: `sensors_battery()`_ reports a negative amount for
   seconds left.
 - 2607_, [Windows]: ``WindowsService.description()`` method may fail with
   ``ERROR_NOT_FOUND``. Now it returns an empty string instead.
@@ -2909,7 +3029,6 @@ In most cases accessing the old names will work but it will cause a
 .. _`win_service_get()`: https://psutil.readthedocs.io/en/latest/#psutil.win_service_get
 .. _`win_service_iter()`: https://psutil.readthedocs.io/en/latest/#psutil.win_service_iter
 
-
 .. _`Process`: https://psutil.readthedocs.io/en/latest/#psutil.Process
 .. _`psutil.Popen`: https://psutil.readthedocs.io/en/latest/#psutil.Popen
 
@@ -2917,7 +3036,6 @@ In most cases accessing the old names will work but it will cause a
 .. _`NoSuchProcess`: https://psutil.readthedocs.io/en/latest/#psutil.NoSuchProcess
 .. _`TimeoutExpired`: https://psutil.readthedocs.io/en/latest/#psutil.TimeoutExpired
 .. _`ZombieProcess`: https://psutil.readthedocs.io/en/latest/#psutil.ZombieProcess
-
 
 .. _`Process.as_dict()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.as_dict
 .. _`Process.children()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.children
@@ -2936,6 +3054,7 @@ In most cases accessing the old names will work but it will cause a
 .. _`Process.ionice()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.ionice
 .. _`Process.is_running()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.is_running
 .. _`Process.kill()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.kill
+.. _`Process.memory_footprint()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.memory_footprint
 .. _`Process.memory_full_info()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.memory_full_info
 .. _`Process.memory_info()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.memory_info
 .. _`Process.memory_info_ex()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.memory_info_ex
@@ -2950,6 +3069,7 @@ In most cases accessing the old names will work but it will cause a
 .. _`Process.num_threads()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.num_threads
 .. _`Process.oneshot()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.oneshot
 .. _`Process.open_files()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.open_files
+.. _`Process.page_faults()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.page_faults
 .. _`Process.parent()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.parent
 .. _`Process.parents()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.parents
 .. _`Process.pid`: https://psutil.readthedocs.io/en/latest/#psutil.Process.pid
@@ -2966,6 +3086,11 @@ In most cases accessing the old names will work but it will cause a
 .. _`Process.username()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.username
 .. _`Process.wait()`: https://psutil.readthedocs.io/en/latest/#psutil.Process.wait
 
+.. _`ProcessStatus`: https://psutil.readthedocs.io/en/latest/#psutil.psutil.ProcessStatus
+.. _`ProcessPriority`: https://psutil.readthedocs.io/en/latest/#psutil.psutil.ProcessPriority
+.. _`ProcessIOPriority`: https://psutil.readthedocs.io/en/latest/#psutil.psutil.ProcessIOPriority
+.. _`ProcessRlimit`: https://psutil.readthedocs.io/en/latest/#psutil.psutil.ProcessRlimit
+.. _`ConnectionStatus`: https://psutil.readthedocs.io/en/latest/#psutil.psutil.ConnectionStatus
 
 .. _`cpu_distribution.py`: https://github.com/giampaolo/psutil/blob/master/scripts/cpu_distribution.py
 .. _`disk_usage.py`: https://github.com/giampaolo/psutil/blob/master/scripts/disk_usage.py
@@ -2982,6 +3107,7 @@ In most cases accessing the old names will work but it will cause a
 .. _`pstree.py`: https://github.com/giampaolo/psutil/blob/master/scripts/pstree.py
 .. _`top.py`: https://github.com/giampaolo/psutil/blob/master/scripts/top.py
 
+.. _`psutil/_ntuples.py`: https://github.com/giampaolo/psutil/blob/master/psutil/_ntuples.py
 
 .. _1: https://github.com/giampaolo/psutil/issues/1
 .. _2: https://github.com/giampaolo/psutil/issues/2

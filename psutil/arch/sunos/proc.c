@@ -43,7 +43,7 @@ psutil_file_to_struct(char *path, void *fstruct, size_t size) {
  * as a Python tuple.
  */
 PyObject *
-psutil_proc_basic_info(PyObject *self, PyObject *args) {
+psutil_proc_oneshot(PyObject *self, PyObject *args) {
     int pid;
     char path[1000];
     psinfo_t info;
@@ -389,6 +389,25 @@ psutil_proc_num_ctx_switches(PyObject *self, PyObject *args) {
 
 
 /*
+ * Return process page faults as a (minor, major) tuple.
+ */
+PyObject *
+psutil_proc_page_faults(PyObject *self, PyObject *args) {
+    int pid;
+    char path[1000];
+    prusage_t info;
+    const char *procfs_path;
+
+    if (!PyArg_ParseTuple(args, "is", &pid, &procfs_path))
+        return NULL;
+    str_format(path, sizeof(path), "%s/%i/usage", procfs_path, pid);
+    if (!psutil_file_to_struct(path, (void *)&info, sizeof(info)))
+        return NULL;
+    return Py_BuildValue("(kk)", info.pr_minf, info.pr_majf);
+}
+
+
+/*
  * Process IO counters.
  *
  * Commented out and left here as a reminder.  Apparently we cannot
@@ -470,7 +489,6 @@ psutil_proc_memory_maps(PyObject *self, PyObject *args) {
     uintptr_t stk_base_sz, brk_base_sz;
     const char *procfs_path;
 
-    PyObject *py_tuple = NULL;
     PyObject *py_path = NULL;
     PyObject *py_retlist = PyList_New(0);
 
@@ -560,22 +578,21 @@ psutil_proc_memory_maps(PyObject *self, PyObject *args) {
         py_path = PyUnicode_DecodeFSDefault(name);
         if (!py_path)
             goto error;
-        py_tuple = Py_BuildValue(
-            "kksOkkk",
-            (unsigned long)p->pr_vaddr,
-            (unsigned long)pr_addr_sz,
-            perms,
-            py_path,
-            (unsigned long)p->pr_rss * p->pr_pagesize,
-            (unsigned long)p->pr_anon * p->pr_pagesize,
-            (unsigned long)p->pr_locked * p->pr_pagesize
-        );
-        if (!py_tuple)
+        if (!pylist_append_fmt(
+                py_retlist,
+                "kksOkkk",
+                (unsigned long)p->pr_vaddr,
+                (unsigned long)pr_addr_sz,
+                perms,
+                py_path,
+                (unsigned long)p->pr_rss * p->pr_pagesize,
+                (unsigned long)p->pr_anon * p->pr_pagesize,
+                (unsigned long)p->pr_locked * p->pr_pagesize
+            ))
+        {
             goto error;
-        if (PyList_Append(py_retlist, py_tuple))
-            goto error;
+        }
         Py_CLEAR(py_path);
-        Py_CLEAR(py_tuple);
 
         // increment pointer
         p += 1;
@@ -588,7 +605,6 @@ psutil_proc_memory_maps(PyObject *self, PyObject *args) {
 error:
     if (fd != -1)
         close(fd);
-    Py_XDECREF(py_tuple);
     Py_XDECREF(py_path);
     Py_DECREF(py_retlist);
     if (xmap != NULL)

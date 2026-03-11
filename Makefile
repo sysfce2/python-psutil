@@ -91,7 +91,9 @@ install-git-hooks:  ## Install GIT pre-commit hook.
 # Tests
 # ===================================================================
 
-RUN_TEST = $(PYTHON_ENV_VARS) $(PYTHON) -m pytest
+# Cache dir on Windows often causes "Permission denied" errors
+_PYTEST_EXTRA != if [ "$$OS" = "Windows_NT" ]; then printf '%s' '-o cache_dir=/tmp/pytest-psutil-cache'; fi
+RUN_TEST = $(PYTHON_ENV_VARS) $(PYTHON) -m pytest $(_PYTEST_EXTRA)
 
 test:  ## Run all tests (except memleak tests).
 	# To run a specific test do `make test ARGS=tests/test_process.py::TestProcess::test_cmdline`
@@ -124,6 +126,9 @@ test-unicode:  ## Test APIs dealing with strings.
 test-contracts:  ## APIs sanity tests.
 	$(RUN_TEST) tests/test_contracts.py $(ARGS)
 
+test-type-hints:  ## Test type hints
+	$(RUN_TEST) tests/test_type_hints.py $(ARGS)
+
 test-connections:  ## Test psutil.net_connections() and Process.net_connections().
 	$(RUN_TEST) -k "test_connections.py or net_" $(ARGS)
 
@@ -134,7 +139,7 @@ test-posix:  ## POSIX specific tests.
 	$(RUN_TEST) -k "test_posix.py or posix_ or Posix" $(ARGS)
 
 test-platform:  ## Run specific platform tests only.
-	$(RUN_TEST) tests/test_`$(PYTHON) -c 'import psutil; print([x.lower() for x in ("LINUX", "BSD", "OSX", "SUNOS", "WINDOWS", "AIX") if getattr(psutil, x)][0])'`.py $(ARGS)
+	$(RUN_TEST) -k test_`$(PYTHON) -c 'import psutil; print([x.lower() for x in ("LINUX", "BSD", "OSX", "SUNOS", "WINDOWS", "AIX") if getattr(psutil, x)][0])'`.py $(ARGS)
 
 test-memleaks:  ## Memory leak tests.
 	PYTHONMALLOC=malloc $(RUN_TEST) -k test_memleaks.py $(ARGS)
@@ -250,7 +255,7 @@ ci-test-cibuildwheel:  ## Run CI tests for the built wheels.
 
 ci-check-dist:  ## Run all sanity checks re. to the package distribution.
 	$(PYTHON) -m pip install -U setuptools virtualenv twine check-manifest validate-pyproject[all] abi3audit
-	$(MAKE) sdist
+	$(MAKE) create-sdist
 	mv wheelhouse/* dist/
 	$(MAKE) check-dist
 	$(MAKE) install

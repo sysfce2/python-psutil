@@ -144,7 +144,11 @@ def df(device):
 
 
 @pytest.mark.skipif(not POSIX, reason="POSIX only")
-class TestProcess(PsutilTestCase):
+class PosixTestCase(PsutilTestCase):
+    pass
+
+
+class TestProcess(PosixTestCase):
     """Compare psutil results against 'ps' command line utility (mainly)."""
 
     @classmethod
@@ -315,9 +319,63 @@ class TestProcess(PsutilTestCase):
         psutil_nice = psutil.Process().nice()
         assert ps_nice == psutil_nice
 
+    @retry_on_failure()
+    def test_num_ctx_switches(self):
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        cws = psutil.Process().num_ctx_switches()
+        tol = 10
+        if "PYTEST_XDIST_WORKER_COUNT" in os.environ:
+            tol *= int(os.environ["PYTEST_XDIST_WORKER_COUNT"])
+        if MACOS:
+            assert cws.voluntary + cws.involuntary == pytest.approx(
+                ru.ru_nvcsw + ru.ru_nivcsw, abs=tol * 2
+            )
+        else:
+            assert cws.voluntary == pytest.approx(ru.ru_nvcsw, abs=tol)
+            assert cws.involuntary == pytest.approx(ru.ru_nivcsw, abs=tol)
 
-@pytest.mark.skipif(not POSIX, reason="POSIX only")
-class TestSystemAPIs(PsutilTestCase):
+    @retry_on_failure()
+    def test_cpu_times(self):
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        cws = psutil.Process().cpu_times()
+        assert cws.user == pytest.approx(ru.ru_utime, abs=0.3)
+        assert cws.system == pytest.approx(ru.ru_stime, abs=0.3)
+
+    @retry_on_failure()
+    def test_page_faults(self):
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        pf = psutil.Process().page_faults()
+        tol = 5
+        assert pf.minor == pytest.approx(ru.ru_minflt, abs=tol)
+        assert pf.major == pytest.approx(ru.ru_majflt, abs=tol)
+
+    @pytest.mark.skipif(not LINUX and not MACOS, reason="Linux, macOS only")
+    def test_page_faults_minor_increase(self):
+        # Access 200 new anonymous pages; each first access triggers a
+        # minor fault.
+        p = psutil.Process()
+        pf_before = p.page_faults()
+        with mmap.mmap(-1, 200 * mmap.PAGESIZE) as m:
+            for i in range(0, 200 * mmap.PAGESIZE, mmap.PAGESIZE):
+                m[i : i + 1] = b'\x00'
+        pf_after = p.page_faults()
+        assert pf_after.minor > pf_before.minor
+
+    def test_memory_peak_rss(self):
+        mem = psutil.Process().memory_info_ex()
+        if not hasattr(mem, "peak_rss"):
+            return pytest.skip("not supported")
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        # VmHWM (from /proc/pid/status) and ru_maxrss both track peak
+        # RSS but are synced independently. Allow 5% tolerance.
+        if MACOS:
+            rss_diff = abs(mem.peak_rss - ru.ru_maxrss)
+        else:
+            rss_diff = abs(mem.peak_rss - ru.ru_maxrss * 1024)
+        assert rss_diff <= mem.peak_rss * 0.05
+
+
+class TestSystemAPIs(PosixTestCase):
     """Test some system APIs."""
 
     @retry_on_failure()
@@ -462,8 +520,7 @@ class TestSystemAPIs(PsutilTestCase):
                 assert abs(usage.percent - sys_percent) <= 1
 
 
-@pytest.mark.skipif(not POSIX, reason="POSIX only")
-class TestMisc(PsutilTestCase):
+class TestMisc(PosixTestCase):
     def test_getpagesize(self):
         pagesize = psutil._psplatform.cext.getpagesize()
         assert pagesize > 0

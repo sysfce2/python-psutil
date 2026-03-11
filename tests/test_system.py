@@ -38,7 +38,6 @@ from . import GITHUB_ACTIONS
 from . import GLOBAL_TIMEOUT
 from . import HAS_BATTERY
 from . import HAS_CPU_FREQ
-from . import HAS_GETLOADAVG
 from . import HAS_HEAP_INFO
 from . import HAS_NET_IO_COUNTERS
 from . import HAS_SENSORS_BATTERY
@@ -345,6 +344,37 @@ class TestMemoryAPIs(PsutilTestCase):
                         f"{name!r} > total (total={mem.total}, {name}={value})"
                     )
 
+    def test_virtual_memory_fields_order(self):
+        mem = psutil.virtual_memory()
+        common = ("total", "available", "percent", "used", "free")
+        assert mem._fields[:5] == common
+        if LINUX:
+            assert mem._fields[5:] == (
+                "active",
+                "inactive",
+                "buffers",
+                "cached",
+                "shared",
+                "slab",
+            )
+        elif MACOS:
+            assert mem._fields[5:] == (
+                "active",
+                "inactive",
+                "wired",
+            )
+        elif BSD:
+            assert mem._fields[5:] == (
+                "active",
+                "inactive",
+                "buffers",
+                "cached",
+                "shared",
+                "wired",
+            )
+        elif WINDOWS or SUNOS or AIX:
+            assert mem._fields[5:] == ()
+
     def test_swap_memory(self):
         mem = psutil.swap_memory()
         assert mem._fields == (
@@ -594,8 +624,6 @@ class TestCpuAPIs(PsutilTestCase):
             if not AIX and name in {'ctx_switches', 'interrupts'}:
                 assert value > 0
 
-    # TODO: remove this once 1892 is fixed
-    @pytest.mark.skipif(MACOS and AARCH64, reason="skipped due to #1892")
     @pytest.mark.skipif(not HAS_CPU_FREQ, reason="not supported")
     def test_cpu_freq(self):
         def check_ls(ls):
@@ -618,7 +646,6 @@ class TestCpuAPIs(PsutilTestCase):
         if LINUX:
             assert len(ls) == psutil.cpu_count()
 
-    @pytest.mark.skipif(not HAS_GETLOADAVG, reason="not supported")
     def test_getloadavg(self):
         loadavg = psutil.getloadavg()
         assert len(loadavg) == 3
@@ -696,8 +723,7 @@ class TestDiskAPIs(PsutilTestCase):
                 except OSError as err:
                     if GITHUB_ACTIONS and MACOS and err.errno == errno.EIO:
                         continue
-                    # http://mail.python.org/pipermail/python-dev/
-                    #     2012-June/120787.html
+                    # http://mail.python.org/pipermail/python-dev/2012-June/120787.html
                     if err.errno not in {errno.EPERM, errno.EACCES}:
                         raise
                 else:

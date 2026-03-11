@@ -12,7 +12,6 @@ from collections import defaultdict
 from collections import namedtuple
 from xml.etree import ElementTree  # noqa: ICN001
 
-from . import _common
 from . import _ntuples as ntp
 from . import _psposix
 from . import _psutil_bsd as cext
@@ -25,9 +24,11 @@ from ._common import ZombieProcess
 from ._common import conn_tmap
 from ._common import conn_to_ntuple
 from ._common import debug
-from ._common import memoize
 from ._common import memoize_when_activated
-from ._common import usage_percent
+from ._enums import BatteryTime
+from ._enums import ConnectionStatus
+from ._enums import NicDuplex
+from ._enums import ProcessStatus
 
 __extra__all__ = []
 
@@ -39,26 +40,26 @@ __extra__all__ = []
 
 if FREEBSD:
     PROC_STATUSES = {
-        cext.SIDL: _common.STATUS_IDLE,
-        cext.SRUN: _common.STATUS_RUNNING,
-        cext.SSLEEP: _common.STATUS_SLEEPING,
-        cext.SSTOP: _common.STATUS_STOPPED,
-        cext.SZOMB: _common.STATUS_ZOMBIE,
-        cext.SWAIT: _common.STATUS_WAITING,
-        cext.SLOCK: _common.STATUS_LOCKED,
+        cext.SIDL: ProcessStatus.STATUS_IDLE,
+        cext.SRUN: ProcessStatus.STATUS_RUNNING,
+        cext.SSLEEP: ProcessStatus.STATUS_SLEEPING,
+        cext.SSTOP: ProcessStatus.STATUS_STOPPED,
+        cext.SZOMB: ProcessStatus.STATUS_ZOMBIE,
+        cext.SWAIT: ProcessStatus.STATUS_WAITING,
+        cext.SLOCK: ProcessStatus.STATUS_LOCKED,
     }
 elif OPENBSD:
     PROC_STATUSES = {
-        cext.SIDL: _common.STATUS_IDLE,
-        cext.SSLEEP: _common.STATUS_SLEEPING,
-        cext.SSTOP: _common.STATUS_STOPPED,
+        cext.SIDL: ProcessStatus.STATUS_IDLE,
+        cext.SSLEEP: ProcessStatus.STATUS_SLEEPING,
+        cext.SSTOP: ProcessStatus.STATUS_STOPPED,
         # According to /usr/include/sys/proc.h SZOMB is unused.
         # test_zombie_process() shows that SDEAD is the right
         # equivalent. Also it appears there's no equivalent of
         # psutil.STATUS_DEAD. SDEAD really means STATUS_ZOMBIE.
-        # cext.SZOMB: _common.STATUS_ZOMBIE,
-        cext.SDEAD: _common.STATUS_ZOMBIE,
-        cext.SZOMB: _common.STATUS_ZOMBIE,
+        # cext.SZOMB: ProcStatus.STATUS_ZOMBIE,
+        cext.SDEAD: ProcessStatus.STATUS_ZOMBIE,
+        cext.SZOMB: ProcessStatus.STATUS_ZOMBIE,
         # From http://www.eecs.harvard.edu/~margo/cs161/videos/proc.h.txt
         # OpenBSD has SRUN and SONPROC: SRUN indicates that a process
         # is runnable but *not* yet running, i.e. is on a run queue.
@@ -66,66 +67,38 @@ elif OPENBSD:
         # a CPU, i.e. it is no longer on a run queue.
         # As such we'll map SRUN to STATUS_WAKING and SONPROC to
         # STATUS_RUNNING
-        cext.SRUN: _common.STATUS_WAKING,
-        cext.SONPROC: _common.STATUS_RUNNING,
+        cext.SRUN: ProcessStatus.STATUS_WAKING,
+        cext.SONPROC: ProcessStatus.STATUS_RUNNING,
     }
 elif NETBSD:
     PROC_STATUSES = {
-        cext.SIDL: _common.STATUS_IDLE,
-        cext.SSLEEP: _common.STATUS_SLEEPING,
-        cext.SSTOP: _common.STATUS_STOPPED,
-        cext.SZOMB: _common.STATUS_ZOMBIE,
-        cext.SRUN: _common.STATUS_WAKING,
-        cext.SONPROC: _common.STATUS_RUNNING,
+        cext.SIDL: ProcessStatus.STATUS_IDLE,
+        cext.SSLEEP: ProcessStatus.STATUS_SLEEPING,
+        cext.SSTOP: ProcessStatus.STATUS_STOPPED,
+        cext.SZOMB: ProcessStatus.STATUS_ZOMBIE,
+        cext.SRUN: ProcessStatus.STATUS_WAKING,
+        cext.SONPROC: ProcessStatus.STATUS_RUNNING,
     }
 
 TCP_STATUSES = {
-    cext.TCPS_ESTABLISHED: _common.CONN_ESTABLISHED,
-    cext.TCPS_SYN_SENT: _common.CONN_SYN_SENT,
-    cext.TCPS_SYN_RECEIVED: _common.CONN_SYN_RECV,
-    cext.TCPS_FIN_WAIT_1: _common.CONN_FIN_WAIT1,
-    cext.TCPS_FIN_WAIT_2: _common.CONN_FIN_WAIT2,
-    cext.TCPS_TIME_WAIT: _common.CONN_TIME_WAIT,
-    cext.TCPS_CLOSED: _common.CONN_CLOSE,
-    cext.TCPS_CLOSE_WAIT: _common.CONN_CLOSE_WAIT,
-    cext.TCPS_LAST_ACK: _common.CONN_LAST_ACK,
-    cext.TCPS_LISTEN: _common.CONN_LISTEN,
-    cext.TCPS_CLOSING: _common.CONN_CLOSING,
-    cext.PSUTIL_CONN_NONE: _common.CONN_NONE,
+    cext.TCPS_ESTABLISHED: ConnectionStatus.CONN_ESTABLISHED,
+    cext.TCPS_SYN_SENT: ConnectionStatus.CONN_SYN_SENT,
+    cext.TCPS_SYN_RECEIVED: ConnectionStatus.CONN_SYN_RECV,
+    cext.TCPS_FIN_WAIT_1: ConnectionStatus.CONN_FIN_WAIT1,
+    cext.TCPS_FIN_WAIT_2: ConnectionStatus.CONN_FIN_WAIT2,
+    cext.TCPS_TIME_WAIT: ConnectionStatus.CONN_TIME_WAIT,
+    cext.TCPS_CLOSED: ConnectionStatus.CONN_CLOSE,
+    cext.TCPS_CLOSE_WAIT: ConnectionStatus.CONN_CLOSE_WAIT,
+    cext.TCPS_LAST_ACK: ConnectionStatus.CONN_LAST_ACK,
+    cext.TCPS_LISTEN: ConnectionStatus.CONN_LISTEN,
+    cext.TCPS_CLOSING: ConnectionStatus.CONN_CLOSING,
+    cext.PSUTIL_CONN_NONE: ConnectionStatus.CONN_NONE,
 }
 
 PAGESIZE = cext.getpagesize()
 AF_LINK = cext.AF_LINK
 
 HAS_PROC_NUM_THREADS = hasattr(cext, "proc_num_threads")
-
-kinfo_proc_map = dict(
-    ppid=0,
-    status=1,
-    real_uid=2,
-    effective_uid=3,
-    saved_uid=4,
-    real_gid=5,
-    effective_gid=6,
-    saved_gid=7,
-    ttynr=8,
-    create_time=9,
-    ctx_switches_vol=10,
-    ctx_switches_unvol=11,
-    read_io_count=12,
-    write_io_count=13,
-    user_time=14,
-    sys_time=15,
-    ch_user_time=16,
-    ch_sys_time=17,
-    rss=18,
-    vms=19,
-    memtext=20,
-    memdata=21,
-    memstack=22,
-    cpunum=23,
-    name=24,
-)
 
 
 # =====================================================================
@@ -134,57 +107,16 @@ kinfo_proc_map = dict(
 
 
 def virtual_memory():
-    mem = cext.virtual_mem()
-    if NETBSD:
-        total, free, active, inactive, wired, cached = mem
-        # On NetBSD buffers and shared mem is determined via /proc.
-        # The C ext set them to 0.
-        with open('/proc/meminfo', 'rb') as f:
-            for line in f:
-                if line.startswith(b'Buffers:'):
-                    buffers = int(line.split()[1]) * 1024
-                elif line.startswith(b'MemShared:'):
-                    shared = int(line.split()[1]) * 1024
-        # Before avail was calculated as (inactive + cached + free),
-        # same as zabbix, but it turned out it could exceed total (see
-        # #2233), so zabbix seems to be wrong. Htop calculates it
-        # differently, and the used value seem more realistic, so let's
-        # match htop.
-        # https://github.com/htop-dev/htop/blob/e7f447b/netbsd/NetBSDProcessList.c#L162
-        # https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/zbxsysinfo/netbsd/memory.c#L135
-        used = active + wired
-        avail = total - used
-    else:
-        total, free, active, inactive, wired, cached, buffers, shared = mem
-        # matches freebsd-memory CLI:
-        # * https://people.freebsd.org/~rse/dist/freebsd-memory
-        # * https://www.cyberciti.biz/files/scripts/freebsd-memory.pl.txt
-        # matches zabbix:
-        # * https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/zbxsysinfo/freebsd/memory.c#L143
-        avail = inactive + cached + free
-        used = active + wired + cached
-
-    percent = usage_percent((total - avail), total, round_=1)
-    return ntp.svmem(
-        total,
-        avail,
-        percent,
-        used,
-        free,
-        active,
-        inactive,
-        buffers,
-        cached,
-        shared,
-        wired,
-    )
+    d = cext.virtual_mem()
+    return ntp.svmem(**d)
 
 
 def swap_memory():
-    """System swap memory as (total, used, free, sin, sout) namedtuple."""
-    total, used, free, sin, sout = cext.swap_mem()
-    percent = usage_percent(used, total, round_=1)
-    return ntp.sswap(total, used, free, percent, sin, sout)
+    """System swap memory as a (total, used, free, percent, sin, sout)
+    named tuple. sin and sout are always 0 on OpenBSD
+    """
+    d = cext.swap_mem()
+    return ntp.sswap(**d)
 
 
 # malloc / heap functions (FreeBSD / NetBSD)
@@ -201,7 +133,7 @@ if hasattr(cext, "heap_info"):
 def cpu_times():
     """Return system per-CPU times as a namedtuple."""
     user, nice, system, idle, irq = cext.cpu_times()
-    return ntp.scputimes(user, nice, system, idle, irq)
+    return ntp.scputimes(user, system, idle, nice, irq)
 
 
 def per_cpu_times():
@@ -209,7 +141,7 @@ def per_cpu_times():
     ret = []
     for cpu_t in cext.per_cpu_times():
         user, nice, system, idle, irq = cpu_t
-        item = ntp.scputimes(user, nice, system, idle, irq)
+        item = ntp.scputimes(user, system, idle, nice, irq)
         ret.append(item)
     return ret
 
@@ -365,8 +297,7 @@ def net_if_stats():
             if err.errno != errno.ENODEV:
                 raise
         else:
-            if hasattr(_common, 'NicDuplex'):
-                duplex = _common.NicDuplex(duplex)
+            duplex = NicDuplex(duplex)
             output_flags = ','.join(flags)
             isup = 'running' in flags
             ret[name] = ntp.snicstats(isup, duplex, speed, mtu, output_flags)
@@ -409,9 +340,9 @@ if FREEBSD:
             return None
         power_plugged = power_plugged == 1
         if power_plugged:
-            secsleft = _common.POWER_TIME_UNLIMITED
+            secsleft = BatteryTime.POWER_TIME_UNLIMITED
         elif minsleft == -1:
-            secsleft = _common.POWER_TIME_UNKNOWN
+            secsleft = BatteryTime.POWER_TIME_UNKNOWN
         else:
             secsleft = minsleft * 60
         return ntp.sbattery(percent, secsleft, power_plugged)
@@ -485,7 +416,7 @@ def users():
 # =====================================================================
 
 
-@memoize
+@functools.lru_cache
 def _pid_0_exists():
     try:
         Process(0).name()
@@ -597,10 +528,8 @@ class Process:
     @wrap_exceptions
     @memoize_when_activated
     def oneshot(self):
-        """Retrieves multiple process info in one shot as a raw tuple."""
-        ret = cext.proc_oneshot_info(self.pid)
-        assert len(ret) == len(kinfo_proc_map)
-        return ret
+        """Retrieves multiple process info in one shot as a raw dict."""
+        return cext.proc_oneshot_kinfo(self.pid)
 
     def oneshot_enter(self):
         self.oneshot.cache_activate(self)
@@ -610,7 +539,7 @@ class Process:
 
     @wrap_exceptions
     def name(self):
-        name = self.oneshot()[kinfo_proc_map['name']]
+        name = self.oneshot()["name"]
         return name if name is not None else cext.proc_name(self.pid)
 
     @wrap_exceptions
@@ -627,8 +556,7 @@ class Process:
                 return os.readlink(f"/proc/{self.pid}/exe")
         else:
             # OpenBSD: exe cannot be determined; references:
-            # https://chromium.googlesource.com/chromium/src/base/+/
-            #     master/base_paths_posix.cc
+            # https://chromium.googlesource.com/chromium/src/base/+/master/base_paths_posix.cc
             # We try our best guess by using which against the first
             # cmdline arg (may return None).
             import shutil
@@ -672,7 +600,7 @@ class Process:
 
     @wrap_exceptions
     def terminal(self):
-        tty_nr = self.oneshot()[kinfo_proc_map['ttynr']]
+        tty_nr = self.oneshot()["ttynr"]
         tmap = _psposix.get_terminal_map()
         try:
             return tmap[tty_nr]
@@ -681,59 +609,47 @@ class Process:
 
     @wrap_exceptions
     def ppid(self):
-        self._ppid = self.oneshot()[kinfo_proc_map['ppid']]
+        self._ppid = self.oneshot()["ppid"]
         return self._ppid
 
     @wrap_exceptions
     def uids(self):
-        rawtuple = self.oneshot()
-        return ntp.puids(
-            rawtuple[kinfo_proc_map['real_uid']],
-            rawtuple[kinfo_proc_map['effective_uid']],
-            rawtuple[kinfo_proc_map['saved_uid']],
-        )
+        d = self.oneshot()
+        return ntp.puids(d["real_uid"], d["effective_uid"], d["saved_uid"])
 
     @wrap_exceptions
     def gids(self):
-        rawtuple = self.oneshot()
-        return ntp.pgids(
-            rawtuple[kinfo_proc_map['real_gid']],
-            rawtuple[kinfo_proc_map['effective_gid']],
-            rawtuple[kinfo_proc_map['saved_gid']],
-        )
+        d = self.oneshot()
+        return ntp.pgids(d["real_gid"], d["effective_gid"], d["saved_gid"])
 
     @wrap_exceptions
     def cpu_times(self):
-        rawtuple = self.oneshot()
+        d = self.oneshot()
         return ntp.pcputimes(
-            rawtuple[kinfo_proc_map['user_time']],
-            rawtuple[kinfo_proc_map['sys_time']],
-            rawtuple[kinfo_proc_map['ch_user_time']],
-            rawtuple[kinfo_proc_map['ch_sys_time']],
+            d["user_time"], d["sys_time"], d["ch_user_time"], d["ch_sys_time"]
         )
 
     if FREEBSD:
 
         @wrap_exceptions
         def cpu_num(self):
-            return self.oneshot()[kinfo_proc_map['cpunum']]
+            return self.oneshot()["cpunum"]
 
     @wrap_exceptions
     def memory_info(self):
-        rawtuple = self.oneshot()
+        d = self.oneshot()
         return ntp.pmem(
-            rawtuple[kinfo_proc_map['rss']],
-            rawtuple[kinfo_proc_map['vms']],
-            rawtuple[kinfo_proc_map['memtext']],
-            rawtuple[kinfo_proc_map['memdata']],
-            rawtuple[kinfo_proc_map['memstack']],
+            rss=d["rss"],
+            vms=d["vms"],
+            text=d["memtext"],
+            data=d["memdata"],
+            stack=d["memstack"],
+            peak_rss=d["peak_rss"],
         )
-
-    memory_full_info = memory_info
 
     @wrap_exceptions
     def create_time(self, monotonic=False):
-        ctime = self.oneshot()[kinfo_proc_map['create_time']]
+        ctime = self.oneshot()["create_time"]
         if NETBSD and not monotonic:
             # NetBSD: ctime subject to system clock updates.
             ctime = adjust_proc_create_time(ctime)
@@ -749,11 +665,13 @@ class Process:
 
     @wrap_exceptions
     def num_ctx_switches(self):
-        rawtuple = self.oneshot()
-        return ntp.pctxsw(
-            rawtuple[kinfo_proc_map['ctx_switches_vol']],
-            rawtuple[kinfo_proc_map['ctx_switches_unvol']],
-        )
+        d = self.oneshot()
+        return ntp.pctxsw(d["ctx_switches_vol"], d["ctx_switches_unvol"])
+
+    @wrap_exceptions
+    def page_faults(self):
+        d = self.oneshot()
+        return ntp.ppagefaults(d["min_faults"], d["maj_faults"])
 
     @wrap_exceptions
     def threads(self):
@@ -806,19 +724,14 @@ class Process:
 
     @wrap_exceptions
     def status(self):
-        code = self.oneshot()[kinfo_proc_map['status']]
+        code = self.oneshot()["status"]
         # XXX is '?' legit? (we're not supposed to return it anyway)
         return PROC_STATUSES.get(code, '?')
 
     @wrap_exceptions
     def io_counters(self):
-        rawtuple = self.oneshot()
-        return ntp.pio(
-            rawtuple[kinfo_proc_map['read_io_count']],
-            rawtuple[kinfo_proc_map['write_io_count']],
-            -1,
-            -1,
-        )
+        d = self.oneshot()
+        return ntp.pio(d["read_io_count"], d["write_io_count"], -1, -1)
 
     @wrap_exceptions
     def cwd(self):

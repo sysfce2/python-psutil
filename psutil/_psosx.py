@@ -8,7 +8,6 @@ import errno
 import functools
 import os
 
-from . import _common
 from . import _ntuples as ntp
 from . import _psposix
 from . import _psutil_osx as cext
@@ -22,6 +21,10 @@ from ._common import isfile_strict
 from ._common import memoize_when_activated
 from ._common import parse_environ_block
 from ._common import usage_percent
+from ._enums import BatteryTime
+from ._enums import ConnectionStatus
+from ._enums import NicDuplex
+from ._enums import ProcessStatus
 
 __extra__all__ = []
 
@@ -35,52 +38,27 @@ PAGESIZE = cext.getpagesize()
 AF_LINK = cext.AF_LINK
 
 TCP_STATUSES = {
-    cext.TCPS_ESTABLISHED: _common.CONN_ESTABLISHED,
-    cext.TCPS_SYN_SENT: _common.CONN_SYN_SENT,
-    cext.TCPS_SYN_RECEIVED: _common.CONN_SYN_RECV,
-    cext.TCPS_FIN_WAIT_1: _common.CONN_FIN_WAIT1,
-    cext.TCPS_FIN_WAIT_2: _common.CONN_FIN_WAIT2,
-    cext.TCPS_TIME_WAIT: _common.CONN_TIME_WAIT,
-    cext.TCPS_CLOSED: _common.CONN_CLOSE,
-    cext.TCPS_CLOSE_WAIT: _common.CONN_CLOSE_WAIT,
-    cext.TCPS_LAST_ACK: _common.CONN_LAST_ACK,
-    cext.TCPS_LISTEN: _common.CONN_LISTEN,
-    cext.TCPS_CLOSING: _common.CONN_CLOSING,
-    cext.PSUTIL_CONN_NONE: _common.CONN_NONE,
+    cext.TCPS_ESTABLISHED: ConnectionStatus.CONN_ESTABLISHED,
+    cext.TCPS_SYN_SENT: ConnectionStatus.CONN_SYN_SENT,
+    cext.TCPS_SYN_RECEIVED: ConnectionStatus.CONN_SYN_RECV,
+    cext.TCPS_FIN_WAIT_1: ConnectionStatus.CONN_FIN_WAIT1,
+    cext.TCPS_FIN_WAIT_2: ConnectionStatus.CONN_FIN_WAIT2,
+    cext.TCPS_TIME_WAIT: ConnectionStatus.CONN_TIME_WAIT,
+    cext.TCPS_CLOSED: ConnectionStatus.CONN_CLOSE,
+    cext.TCPS_CLOSE_WAIT: ConnectionStatus.CONN_CLOSE_WAIT,
+    cext.TCPS_LAST_ACK: ConnectionStatus.CONN_LAST_ACK,
+    cext.TCPS_LISTEN: ConnectionStatus.CONN_LISTEN,
+    cext.TCPS_CLOSING: ConnectionStatus.CONN_CLOSING,
+    cext.PSUTIL_CONN_NONE: ConnectionStatus.CONN_NONE,
 }
 
 PROC_STATUSES = {
-    cext.SIDL: _common.STATUS_IDLE,
-    cext.SRUN: _common.STATUS_RUNNING,
-    cext.SSLEEP: _common.STATUS_SLEEPING,
-    cext.SSTOP: _common.STATUS_STOPPED,
-    cext.SZOMB: _common.STATUS_ZOMBIE,
+    cext.SIDL: ProcessStatus.STATUS_IDLE,
+    cext.SRUN: ProcessStatus.STATUS_RUNNING,
+    cext.SSLEEP: ProcessStatus.STATUS_SLEEPING,
+    cext.SSTOP: ProcessStatus.STATUS_STOPPED,
+    cext.SZOMB: ProcessStatus.STATUS_ZOMBIE,
 }
-
-kinfo_proc_map = dict(
-    ppid=0,
-    ruid=1,
-    euid=2,
-    suid=3,
-    rgid=4,
-    egid=5,
-    sgid=6,
-    ttynr=7,
-    ctime=8,
-    status=9,
-    name=10,
-)
-
-pidtaskinfo_map = dict(
-    cpuutime=0,
-    cpustime=1,
-    rss=2,
-    vms=3,
-    pfaults=4,
-    pageins=5,
-    numthreads=6,
-    volctxsw=7,
-)
 
 
 # =====================================================================
@@ -90,26 +68,18 @@ pidtaskinfo_map = dict(
 
 def virtual_memory():
     """System virtual memory as a namedtuple."""
-    total, active, inactive, wired, free, speculative = cext.virtual_mem()
-    # This is how Zabbix calculate avail and used mem:
-    # https://github.com/zabbix/zabbix/blob/master/src/libs/zbxsysinfo/osx/memory.c
-    # Also see: https://github.com/giampaolo/psutil/issues/1277
-    avail = inactive + free
-    used = active + wired
-    # This is NOT how Zabbix calculates free mem but it matches "free"
-    # cmdline utility.
-    free -= speculative
-    percent = usage_percent((total - avail), total, round_=1)
-    return ntp.svmem(
-        total, avail, percent, used, free, active, inactive, wired
+    d = cext.virtual_mem()
+    d["percent"] = usage_percent(
+        (d["total"] - d["available"]), d["total"], round_=1
     )
+    return ntp.svmem(**d)
 
 
 def swap_memory():
     """Swap system memory as a (total, used, free, sin, sout) tuple."""
-    total, used, free, sin, sout = cext.swap_mem()
-    percent = usage_percent(used, total, round_=1)
-    return ntp.sswap(total, used, free, percent, sin, sout)
+    d = cext.swap_mem()
+    d["percent"] = usage_percent(d["used"], d["total"], round_=1)
+    return ntp.sswap(**d)
 
 
 # malloc / heap functions
@@ -125,7 +95,7 @@ heap_trim = cext.heap_trim
 def cpu_times():
     """Return system CPU times as a namedtuple."""
     user, nice, system, idle = cext.cpu_times()
-    return ntp.scputimes(user, nice, system, idle)
+    return ntp.scputimes(user, system, idle, nice)
 
 
 def per_cpu_times():
@@ -133,7 +103,7 @@ def per_cpu_times():
     ret = []
     for cpu_t in cext.per_cpu_times():
         user, nice, system, idle = cpu_t
-        item = ntp.scputimes(user, nice, system, idle)
+        item = ntp.scputimes(user, system, idle, nice)
         ret.append(item)
     return ret
 
@@ -206,9 +176,9 @@ def sensors_battery():
         return None
     power_plugged = power_plugged == 1
     if power_plugged:
-        secsleft = _common.POWER_TIME_UNLIMITED
+        secsleft = BatteryTime.POWER_TIME_UNLIMITED
     elif minsleft == -1:
-        secsleft = _common.POWER_TIME_UNKNOWN
+        secsleft = BatteryTime.POWER_TIME_UNKNOWN
     else:
         secsleft = minsleft * 60
     return ntp.sbattery(percent, secsleft, power_plugged)
@@ -255,8 +225,7 @@ def net_if_stats():
             if err.errno != errno.ENODEV:
                 raise
         else:
-            if hasattr(_common, 'NicDuplex'):
-                duplex = _common.NicDuplex(duplex)
+            duplex = NicDuplex(duplex)
             output_flags = ','.join(flags)
             isup = 'running' in flags
             ret[name] = ntp.snicstats(isup, duplex, speed, mtu, output_flags)
@@ -369,31 +338,27 @@ class Process:
 
     @wrap_exceptions
     @memoize_when_activated
-    def _get_kinfo_proc(self):
+    def _oneshot_kinfo(self):
         # Note: should work with all PIDs without permission issues.
-        ret = cext.proc_kinfo_oneshot(self.pid)
-        assert len(ret) == len(kinfo_proc_map)
-        return ret
+        return cext.proc_oneshot_kinfo(self.pid)
 
     @wrap_exceptions
     @memoize_when_activated
-    def _get_pidtaskinfo(self):
+    def _oneshot_pidtaskinfo(self):
         # Note: should work for PIDs owned by user only.
-        ret = cext.proc_pidtaskinfo_oneshot(self.pid)
-        assert len(ret) == len(pidtaskinfo_map)
-        return ret
+        return cext.proc_oneshot_pidtaskinfo(self.pid)
 
     def oneshot_enter(self):
-        self._get_kinfo_proc.cache_activate(self)
-        self._get_pidtaskinfo.cache_activate(self)
+        self._oneshot_kinfo.cache_activate(self)
+        self._oneshot_pidtaskinfo.cache_activate(self)
 
     def oneshot_exit(self):
-        self._get_kinfo_proc.cache_deactivate(self)
-        self._get_pidtaskinfo.cache_deactivate(self)
+        self._oneshot_kinfo.cache_deactivate(self)
+        self._oneshot_pidtaskinfo.cache_deactivate(self)
 
     @wrap_exceptions
     def name(self):
-        name = self._get_kinfo_proc()[kinfo_proc_map['name']]
+        name = self._oneshot_kinfo()["name"]
         return name if name is not None else cext.proc_name(self.pid)
 
     @wrap_exceptions
@@ -410,7 +375,7 @@ class Process:
 
     @wrap_exceptions
     def ppid(self):
-        self._ppid = self._get_kinfo_proc()[kinfo_proc_map['ppid']]
+        self._ppid = self._oneshot_kinfo()["ppid"]
         return self._ppid
 
     @wrap_exceptions
@@ -419,25 +384,17 @@ class Process:
 
     @wrap_exceptions
     def uids(self):
-        rawtuple = self._get_kinfo_proc()
-        return ntp.puids(
-            rawtuple[kinfo_proc_map['ruid']],
-            rawtuple[kinfo_proc_map['euid']],
-            rawtuple[kinfo_proc_map['suid']],
-        )
+        d = self._oneshot_kinfo()
+        return ntp.puids(d["ruid"], d["euid"], d["suid"])
 
     @wrap_exceptions
     def gids(self):
-        rawtuple = self._get_kinfo_proc()
-        return ntp.puids(
-            rawtuple[kinfo_proc_map['rgid']],
-            rawtuple[kinfo_proc_map['egid']],
-            rawtuple[kinfo_proc_map['sgid']],
-        )
+        d = self._oneshot_kinfo()
+        return ntp.pgids(d["rgid"], d["egid"], d["sgid"])
 
     @wrap_exceptions
     def terminal(self):
-        tty_nr = self._get_kinfo_proc()[kinfo_proc_map['ttynr']]
+        tty_nr = self._oneshot_kinfo()["ttynr"]
         tmap = _psposix.get_terminal_map()
         try:
             return tmap[tty_nr]
@@ -446,34 +403,32 @@ class Process:
 
     @wrap_exceptions
     def memory_info(self):
-        rawtuple = self._get_pidtaskinfo()
-        return ntp.pmem(
-            rawtuple[pidtaskinfo_map['rss']],
-            rawtuple[pidtaskinfo_map['vms']],
-            rawtuple[pidtaskinfo_map['pfaults']],
-            rawtuple[pidtaskinfo_map['pageins']],
-        )
+        d = self._oneshot_pidtaskinfo()
+        return ntp.pmem(d["rss"], d["vms"])
 
     @wrap_exceptions
-    def memory_full_info(self):
-        basic_mem = self.memory_info()
+    def memory_info_ex(self):
+        return cext.proc_memory_info_ex(self.pid)
+
+    @wrap_exceptions
+    def memory_footprint(self):
         uss = cext.proc_memory_uss(self.pid)
-        return ntp.pfullmem(*basic_mem + (uss,))
+        return ntp.pfootprint(uss)
+
+    @wrap_exceptions
+    def page_faults(self):
+        d = self._oneshot_pidtaskinfo()
+        return ntp.ppagefaults(d["minor_faults"], d["major_faults"])
 
     @wrap_exceptions
     def cpu_times(self):
-        rawtuple = self._get_pidtaskinfo()
-        return ntp.pcputimes(
-            rawtuple[pidtaskinfo_map['cpuutime']],
-            rawtuple[pidtaskinfo_map['cpustime']],
-            # children user / system times are not retrievable (set to 0)
-            0.0,
-            0.0,
-        )
+        d = self._oneshot_pidtaskinfo()
+        # children user / system times are not retrievable (set to 0)
+        return ntp.pcputimes(d["cpu_utime"], d["cpu_stime"], 0.0, 0.0)
 
     @wrap_exceptions
     def create_time(self, monotonic=False):
-        ctime = self._get_kinfo_proc()[kinfo_proc_map['ctime']]
+        ctime = self._oneshot_kinfo()["ctime"]
         if not monotonic:
             ctime = adjust_proc_create_time(ctime)
         return ctime
@@ -483,12 +438,12 @@ class Process:
         # Unvoluntary value seems not to be available;
         # getrusage() numbers seems to confirm this theory.
         # We set it to 0.
-        vol = self._get_pidtaskinfo()[pidtaskinfo_map['volctxsw']]
+        vol = self._oneshot_pidtaskinfo()["volctxsw"]
         return ntp.pctxsw(vol, 0)
 
     @wrap_exceptions
     def num_threads(self):
-        return self._get_pidtaskinfo()[pidtaskinfo_map['numthreads']]
+        return self._oneshot_pidtaskinfo()["num_threads"]
 
     @wrap_exceptions
     def open_files(self):
@@ -535,7 +490,7 @@ class Process:
 
     @wrap_exceptions
     def status(self):
-        code = self._get_kinfo_proc()[kinfo_proc_map['status']]
+        code = self._oneshot_kinfo()["status"]
         # XXX is '?' legit? (we're not supposed to return it anyway)
         return PROC_STATUSES.get(code, '?')
 

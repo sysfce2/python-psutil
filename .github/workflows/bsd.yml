@@ -21,8 +21,7 @@ on:
       - "psutil/arch/openbsd/**"
       - "psutil/arch/posix/**"
       - "setup.py"
-      - "tests/test_bsd.py"
-      - "tests/test_posix.py"
+      - "tests/**"
   pull_request:
     paths: *bsd_paths
 name: bsd
@@ -55,7 +54,7 @@ jobs:
             make ci-test
 
   netbsd:
-    if: false # XXX: disabled
+    # if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

@@ -48,6 +48,7 @@ static PyMethodDef PsutilMethods[] = {
     {"proc_memory_uss", psutil_proc_memory_uss, METH_VARARGS},
     {"proc_num_handles", psutil_proc_num_handles, METH_VARARGS},
     {"proc_open_files", psutil_proc_open_files, METH_VARARGS},
+    {"proc_page_faults", psutil_proc_page_faults, METH_VARARGS},
     {"proc_priority_get", psutil_proc_priority_get, METH_VARARGS},
     {"proc_priority_set", psutil_proc_priority_set, METH_VARARGS},
     {"proc_suspend_or_resume", psutil_proc_suspend_or_resume, METH_VARARGS},
@@ -57,7 +58,7 @@ static PyMethodDef PsutilMethods[] = {
     {"proc_wait", psutil_proc_wait, METH_VARARGS},
 
     // --- alternative pinfo interface
-    {"proc_info", psutil_proc_info, METH_VARARGS},
+    {"proc_oneshot", psutil_proc_oneshot, METH_VARARGS},
 
     // --- system-related functions
     {"uptime", psutil_uptime, METH_VARARGS},
@@ -87,7 +88,6 @@ static PyMethodDef PsutilMethods[] = {
     {"ppid_map", psutil_ppid_map, METH_VARARGS},
     {"sensors_battery", psutil_sensors_battery, METH_VARARGS},
     {"users", psutil_users, METH_VARARGS},
-    {"virtual_mem", psutil_virtual_mem, METH_VARARGS},
 
     // --- windows services
     {"winservice_enumerate", psutil_winservice_enumerate, METH_VARARGS},
@@ -97,7 +97,8 @@ static PyMethodDef PsutilMethods[] = {
     {"winservice_start", psutil_winservice_start, METH_VARARGS},
     {"winservice_stop", psutil_winservice_stop, METH_VARARGS},
 
-    // --- windows API bindings
+    // --- direct Windows APIs
+    {"GetPerformanceInfo", psutil_GetPerformanceInfo, METH_VARARGS},
     {"QueryDosDevice", psutil_QueryDosDevice, METH_VARARGS},
 
     // --- others

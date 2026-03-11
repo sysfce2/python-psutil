@@ -15,95 +15,94 @@ original(ish) implementations:
 */
 
 #include <Python.h>
-#include <sys/swap.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/sysctl.h>
+#include <sys/vmmeter.h>
 #include <uvm/uvm_extern.h>
 
 #include "../../arch/all/init.h"
 
 
 // Virtual memory stats, taken from:
-// https://github.com/satterly/zabbix-stats/blob/master/src/libs/zbxsysinfo/
-//     netbsd/memory.c
+// https://github.com/zabbix/zabbix/blob/master/src/libs/zbxsysinfo/netbsd/memory.c
 PyObject *
 psutil_virtual_mem(PyObject *self, PyObject *args) {
-    size_t size;
     struct uvmexp_sysctl uv;
-    int mib[] = {CTL_VM, VM_UVMEXP2};
-    long long cached;
-
-    if (psutil_sysctl(mib, 2, &uv, sizeof(uv)) != 0)
-        return NULL;
-
-    // Note: zabbix does not include anonpages, but that doesn't match the
-    // "Cached" value in /proc/meminfo.
-    // https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/zbxsysinfo/netbsd/memory.c#L182
-    cached = (uv.filepages + uv.execpages + uv.anonpages) << uv.pageshift;
-    return Py_BuildValue(
-        "LLLLLL",
-        (long long)uv.npages << uv.pageshift,  // total
-        (long long)uv.free << uv.pageshift,  // free
-        (long long)uv.active << uv.pageshift,  // active
-        (long long)uv.inactive << uv.pageshift,  // inactive
-        (long long)uv.wired << uv.pageshift,  // wired
-        cached  // cached
-    );
-}
-
-
-PyObject *
-psutil_swap_mem(PyObject *self, PyObject *args) {
-    uint64_t swap_total, swap_free;
-    struct swapent *swdev;
-    int nswap, i;
+    struct vmtotal vmdata;
+    int uvmexp_mib[] = {CTL_VM, VM_UVMEXP2};
+    int vmmeter_mib[] = {CTL_VM, VM_METER};
+    unsigned long long total, free, active, inactive, wired, cached;
+    unsigned long long buffers, shared, used, avail;
+    double percent;
     long pagesize = psutil_getpagesize();
+    FILE *f;
+    char line[256];
+    PyObject *dict = PyDict_New();
 
-    nswap = swapctl(SWAP_NSWAP, 0, 0);
-    if (nswap == 0) {
-        // This means there's no swap partition.
-        return Py_BuildValue("(iiiii)", 0, 0, 0, 0, 0);
-    }
-
-    swdev = calloc(nswap, sizeof(*swdev));
-    if (swdev == NULL) {
-        psutil_oserror();
+    if (dict == NULL)
         return NULL;
-    }
 
-    if (swapctl(SWAP_STATS, swdev, nswap) == -1) {
-        psutil_oserror();
+    if (psutil_sysctl(uvmexp_mib, 2, &uv, sizeof(uv)) != 0)
         goto error;
-    }
+    if (psutil_sysctl(vmmeter_mib, 2, &vmdata, sizeof(vmdata)) != 0)
+        goto error;
 
-    // Total things up.
-    swap_total = swap_free = 0;
-    for (i = 0; i < nswap; i++) {
-        if (swdev[i].se_flags & SWF_ENABLE) {
-            swap_total += (uint64_t)swdev[i].se_nblks * DEV_BSIZE;
-            swap_free += (uint64_t)(swdev[i].se_nblks - swdev[i].se_inuse)
-                         * DEV_BSIZE;
+    // get buffers from /proc/meminfo
+    buffers = 0;
+    f = fopen("/proc/meminfo", "r");
+    if (f != NULL) {
+        while (fgets(line, sizeof(line), f) != NULL) {
+            if (strncmp(line, "Buffers:", 8) == 0) {
+                sscanf(line + 8, "%llu", &buffers);
+                break;
+            }
         }
+        fclose(f);
+        buffers *= 1024;
     }
-    free(swdev);
 
-    // Get swap in/out
-    unsigned int total;
-    size_t size = sizeof(total);
-    struct uvmexp_sysctl uv;
-    int mib[] = {CTL_VM, VM_UVMEXP2};
-    if (psutil_sysctl(mib, 2, &uv, sizeof(uv)) != 0)
+    total = (unsigned long long)uv.npages << uv.pageshift;
+    free = (unsigned long long)uv.free << uv.pageshift;
+    active = (unsigned long long)uv.active << uv.pageshift;
+    inactive = (unsigned long long)uv.inactive << uv.pageshift;
+    wired = (unsigned long long)uv.wired << uv.pageshift;
+    // Also in /proc/meminfo as MemShared
+    shared = (unsigned long long)(vmdata.t_vmshr + vmdata.t_rmshr) * pagesize;
+
+    // Note: zabbix does not include anonpages, but that doesn't match
+    // the "Cached" value in /proc/meminfo.
+    // https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/
+    //   zbxsysinfo/netbsd/memory.c#L182
+    cached = (unsigned long long)(uv.filepages + uv.execpages + uv.anonpages)
+             << uv.pageshift;
+
+    // Before avail was calculated as (inactive + cached + free), same
+    // as zabbix, but it turned out it could exceed total (see #2233),
+    // so zabbix seems to be wrong. Htop calculates it differently, and
+    // the used value seem more realistic, so let's match htop.
+    // https://github.com/htop-dev/htop/blob/e7f447b/netbsd/NetBSDProcessList.c#L162
+    // https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/zbxsysinfo/netbsd/memory.c#L135
+    used = active + wired;
+    avail = total - used;
+    percent = psutil_usage_percent((double)(total - avail), (double)total, 1);
+
+    if (!(pydict_add(dict, "total", "K", total)
+          | pydict_add(dict, "available", "K", avail)
+          | pydict_add(dict, "percent", "d", percent)
+          | pydict_add(dict, "used", "K", used)
+          | pydict_add(dict, "free", "K", free)
+          | pydict_add(dict, "active", "K", active)
+          | pydict_add(dict, "inactive", "K", inactive)
+          | pydict_add(dict, "buffers", "K", buffers)
+          | pydict_add(dict, "wired", "K", wired)
+          | pydict_add(dict, "cached", "K", cached)
+          | pydict_add(dict, "shared", "K", shared)))
         goto error;
 
-    return Py_BuildValue(
-        "(LLLll)",
-        swap_total,
-        (swap_total - swap_free),
-        swap_free,
-        (long)uv.pgswapin * pagesize,  // swap in
-        (long)uv.pgswapout * pagesize  // swap out
-    );
+    return dict;
 
 error:
-    free(swdev);
+    Py_DECREF(dict);
     return NULL;
 }

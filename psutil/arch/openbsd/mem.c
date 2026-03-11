@@ -9,7 +9,6 @@
 #include <sys/sysctl.h>
 #include <sys/vmmeter.h>
 #include <sys/mount.h>
-#include <sys/swap.h>
 #include <sys/param.h>
 
 #include "../../arch/all/init.h"
@@ -17,95 +16,71 @@
 
 PyObject *
 psutil_virtual_mem(PyObject *self, PyObject *args) {
-    int64_t total_physmem;
+    int64_t _total;
+    unsigned long long free, active, inactive, wired, cached, shared;
+    unsigned long long total, avail, used;
+    double percent;
     int uvmexp_mib[] = {CTL_VM, VM_UVMEXP};
     int bcstats_mib[] = {CTL_VFS, VFS_GENERIC, VFS_BCACHESTAT};
     int physmem_mib[] = {CTL_HW, HW_PHYSMEM64};
     int vmmeter_mib[] = {CTL_VM, VM_METER};
-    size_t size;
     struct uvmexp uvmexp;
     struct bcachestats bcstats;
     struct vmtotal vmdata;
     long pagesize = psutil_getpagesize();
+    PyObject *dict = PyDict_New();
 
-    size = sizeof(total_physmem);
-    if (psutil_sysctl(physmem_mib, 2, &total_physmem, size) != 0)
+    if (dict == NULL)
         return NULL;
 
-    size = sizeof(uvmexp);
-    if (psutil_sysctl(uvmexp_mib, 2, &uvmexp, size) != 0)
-        return NULL;
-
-    size = sizeof(bcstats);
-    if (psutil_sysctl(bcstats_mib, 3, &bcstats, size) != 0)
-        return NULL;
-
-    size = sizeof(vmdata);
-    if (psutil_sysctl(vmmeter_mib, 2, &vmdata, size) != 0)
-        return NULL;
-
-    return Py_BuildValue(
-        "KKKKKKKK",
-        // Note: many programs calculate total memory as
-        // "uvmexp.npages * pagesize" but this is incorrect and does not
-        // match "sysctl | grep hw.physmem".
-        (unsigned long long)total_physmem,
-        (unsigned long long)uvmexp.free * pagesize,
-        (unsigned long long)uvmexp.active * pagesize,
-        (unsigned long long)uvmexp.inactive * pagesize,
-        (unsigned long long)uvmexp.wired * pagesize,
-        // this is how "top" determines it
-        (unsigned long long)bcstats.numbufpages * pagesize,  // cached
-        (unsigned long long)0,  // buffers
-        (unsigned long long)vmdata.t_vmshr + vmdata.t_rmshr  // shared
-    );
-}
-
-
-PyObject *
-psutil_swap_mem(PyObject *self, PyObject *args) {
-    uint64_t swap_total, swap_free;
-    struct swapent *swdev;
-    int nswap, i;
-
-    if ((nswap = swapctl(SWAP_NSWAP, 0, 0)) == 0) {
-        psutil_oserror();
-        return NULL;
-    }
-
-    if ((swdev = calloc(nswap, sizeof(*swdev))) == NULL) {
-        PyErr_NoMemory();
-        return NULL;
-    }
-
-    if (swapctl(SWAP_STATS, swdev, nswap) == -1) {
-        psutil_oserror();
+    // Note: many programs calculate total memory as "uvmexp.npages *
+    // pagesize" but this is incorrect and does not match "sysctl |
+    // grep hw.physmem".
+    if (psutil_sysctl(physmem_mib, 2, &_total, sizeof(_total)) != 0)
         goto error;
-    }
+    if (psutil_sysctl(uvmexp_mib, 2, &uvmexp, sizeof(uvmexp)) != 0)
+        goto error;
+    if (psutil_sysctl(bcstats_mib, 3, &bcstats, sizeof(bcstats)) != 0)
+        goto error;
+    if (psutil_sysctl(vmmeter_mib, 2, &vmdata, sizeof(vmdata)) != 0)
+        goto error;
 
-    // Total things up.
-    swap_total = swap_free = 0;
-    for (i = 0; i < nswap; i++) {
-        if (swdev[i].se_flags & SWF_ENABLE) {
-            swap_free += (swdev[i].se_nblks - swdev[i].se_inuse);
-            swap_total += swdev[i].se_nblks;
-        }
-    }
+    total = (unsigned long long)_total;
+    free = (unsigned long long)uvmexp.free * pagesize;
+    active = (unsigned long long)uvmexp.active * pagesize;
+    inactive = (unsigned long long)uvmexp.inactive * pagesize;
+    wired = (unsigned long long)uvmexp.wired * pagesize;
+    shared = (unsigned long long)vmdata.t_vmshr + vmdata.t_rmshr;
 
-    free(swdev);
-    return Py_BuildValue(
-        "(LLLII)",
-        swap_total * DEV_BSIZE,
-        (swap_total - swap_free) * DEV_BSIZE,
-        swap_free * DEV_BSIZE,
-        // swap in / swap out is not supported as the
-        // swapent struct does not provide any info
-        // about it.
-        0,
-        0
-    );
+    // this is how "top" determines cached mem
+    cached = (unsigned long long)bcstats.numbufpages * pagesize;
+
+    // matches freebsd-memory CLI:
+    // * https://people.freebsd.org/~rse/dist/freebsd-memory
+    // * https://www.cyberciti.biz/files/scripts/freebsd-memory.pl.txt
+    // matches zabbix:
+    // * https://github.com/zabbix/zabbix/blob/af5e0f8/src/libs/
+    //   zbxsysinfo/freebsd/memory.c#L143
+    avail = inactive + cached + free;
+    used = active + wired + cached;
+    percent = psutil_usage_percent((double)(total - avail), (double)total, 1);
+
+    if (!(pydict_add(dict, "total", "K", total)
+          | pydict_add(dict, "available", "K", avail)
+          | pydict_add(dict, "percent", "d", percent)
+          | pydict_add(dict, "used", "K", used)
+          | pydict_add(dict, "free", "K", free)
+          | pydict_add(dict, "active", "K", active)
+          | pydict_add(dict, "inactive", "K", inactive)
+          | pydict_add(dict, "buffers", "K", 0ULL)
+          | pydict_add(dict, "cached", "K", cached)
+          | pydict_add(dict, "shared", "K", shared)
+          | pydict_add(dict, "wired", "K", wired)))
+        goto error;
+
+    return dict;
 
 error:
-    free(swdev);
+    Py_DECREF(dict);
     return NULL;
 }

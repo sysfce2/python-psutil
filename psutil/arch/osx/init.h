@@ -10,7 +10,7 @@
 #include <libproc.h>
 #include <mach/mach_time.h>
 
-extern struct mach_timebase_info PSUTIL_MACH_TIMEBASE_INFO;
+extern uint64_t PSUTIL_HW_TBFREQUENCY;
 
 int psutil_setup_osx(void);
 int _psutil_pids(pid_t **pids_array, int *pids_count);
@@ -42,13 +42,14 @@ PyObject *psutil_proc_cmdline(PyObject *self, PyObject *args);
 PyObject *psutil_proc_cwd(PyObject *self, PyObject *args);
 PyObject *psutil_proc_environ(PyObject *self, PyObject *args);
 PyObject *psutil_proc_exe(PyObject *self, PyObject *args);
-PyObject *psutil_proc_kinfo_oneshot(PyObject *self, PyObject *args);
+PyObject *psutil_proc_memory_info_ex(PyObject *self, PyObject *args);
 PyObject *psutil_proc_memory_uss(PyObject *self, PyObject *args);
 PyObject *psutil_proc_name(PyObject *self, PyObject *args);
 PyObject *psutil_proc_net_connections(PyObject *self, PyObject *args);
 PyObject *psutil_proc_num_fds(PyObject *self, PyObject *args);
+PyObject *psutil_proc_oneshot_kinfo(PyObject *self, PyObject *args);
+PyObject *psutil_proc_oneshot_pidtaskinfo(PyObject *self, PyObject *args);
 PyObject *psutil_proc_open_files(PyObject *self, PyObject *args);
-PyObject *psutil_proc_pidtaskinfo_oneshot(PyObject *self, PyObject *args);
 PyObject *psutil_proc_threads(PyObject *self, PyObject *args);
 PyObject *psutil_sensors_battery(PyObject *self, PyObject *args);
 PyObject *psutil_swap_mem(PyObject *self, PyObject *args);

@@ -18,6 +18,7 @@
 #include <sys/sysctl.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
+#include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <netinet/tcp_fsm.h>
 #include <arpa/inet.h>
@@ -60,7 +61,7 @@ convert_status(struct extern_proc *p, struct eproc *e) {
 
 
 /*
- * Return multiple process info as a Python tuple in one shot by
+ * Return multiple process info as a Python dict in one shot by
  * using sysctl() and filling up a kinfo_proc struct.
  * It should be possible to do this for all processes without
  * incurring into permission (EPERM) errors.
@@ -68,17 +69,19 @@ convert_status(struct extern_proc *p, struct eproc *e) {
  * information.
  */
 PyObject *
-psutil_proc_kinfo_oneshot(PyObject *self, PyObject *args) {
+psutil_proc_oneshot_kinfo(PyObject *self, PyObject *args) {
     pid_t pid;
     int status;
     struct kinfo_proc kp;
     PyObject *py_name = NULL;
-    PyObject *py_retlist = NULL;
+    PyObject *dict = PyDict_New();
 
+    if (!dict)
+        return NULL;
     if (!PyArg_ParseTuple(args, _Py_PARSE_PID, &pid))
-        return NULL;
+        goto error;
     if (psutil_get_kinfo_proc(pid, &kp) == -1)
-        return NULL;
+        goto error;
 
     py_name = PyUnicode_DecodeFSDefault(kp.kp_proc.p_comm);
     if (!py_name) {
@@ -91,28 +94,32 @@ psutil_proc_kinfo_oneshot(PyObject *self, PyObject *args) {
 
     status = convert_status(&kp.kp_proc, &kp.kp_eproc);
 
-    py_retlist = Py_BuildValue(
-        _Py_PARSE_PID "llllllldiO",
-        kp.kp_eproc.e_ppid,  // (pid_t) ppid
-        (long)kp.kp_eproc.e_pcred.p_ruid,  // (long) real uid
-        (long)kp.kp_eproc.e_ucred.cr_uid,  // (long) effective uid
-        (long)kp.kp_eproc.e_pcred.p_svuid,  // (long) saved uid
-        (long)kp.kp_eproc.e_pcred.p_rgid,  // (long) real gid
-        (long)kp.kp_eproc.e_ucred.cr_groups[0],  // (long) effective gid
-        (long)kp.kp_eproc.e_pcred.p_svgid,  // (long) saved gid
-        (long long)kp.kp_eproc.e_tdev,  // (long long) tty nr
-        PSUTIL_TV2DOUBLE(kp.kp_proc.p_starttime),  // (double) create time
-        status,  // (int) status
-        py_name  // (pystr) name
-    );
+    // clang-format off
+    if (!pydict_add(dict, "ppid", _Py_PARSE_PID, kp.kp_eproc.e_ppid)) goto error;
+    if (!pydict_add(dict, "ruid", "l", (long)kp.kp_eproc.e_pcred.p_ruid)) goto error;
+    if (!pydict_add(dict, "euid", "l", (long)kp.kp_eproc.e_ucred.cr_uid)) goto error;
+    if (!pydict_add(dict, "suid", "l", (long)kp.kp_eproc.e_pcred.p_svuid)) goto error;
+    if (!pydict_add(dict, "rgid", "l", (long)kp.kp_eproc.e_pcred.p_rgid)) goto error;
+    if (!pydict_add(dict, "egid", "l", (long)kp.kp_eproc.e_ucred.cr_groups[0])) goto error;
+    if (!pydict_add(dict, "sgid", "l", (long)kp.kp_eproc.e_pcred.p_svgid)) goto error;
+    if (!pydict_add(dict, "ttynr", "l", (long)kp.kp_eproc.e_tdev)) goto error;
+    if (!pydict_add(dict, "ctime", "d", PSUTIL_TV2DOUBLE(kp.kp_proc.p_starttime))) goto error;
+    if (!pydict_add(dict, "status", "i", status)) goto error;
+    if (!pydict_add(dict, "name", "O", py_name)) goto error;
+    // clang-format on
 
     Py_DECREF(py_name);
-    return py_retlist;
+    return dict;
+
+error:
+    Py_XDECREF(py_name);
+    Py_DECREF(dict);
+    return NULL;
 }
 
 
 /*
- * Return multiple process info as a Python tuple in one shot by
+ * Return multiple process info as a Python dict in one shot by
  * using proc_pidinfo(PROC_PIDTASKINFO) and filling a proc_taskinfo
  * struct.
  * Contrarily from proc_kinfo above this function will fail with
@@ -120,41 +127,51 @@ psutil_proc_kinfo_oneshot(PyObject *self, PyObject *args) {
  * processes.
  */
 PyObject *
-psutil_proc_pidtaskinfo_oneshot(PyObject *self, PyObject *args) {
+psutil_proc_oneshot_pidtaskinfo(PyObject *self, PyObject *args) {
     pid_t pid;
     struct proc_taskinfo pti;
-    uint64_t total_user;
-    uint64_t total_system;
+    unsigned long maj_faults;
+    unsigned long min_faults;
+    PyObject *dict = PyDict_New();
 
+    if (!dict)
+        return NULL;
     if (!PyArg_ParseTuple(args, _Py_PARSE_PID, &pid))
-        return NULL;
+        goto error;
     if (psutil_proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, sizeof(pti)) != 0)
-        return NULL;
+        goto error;
 
-    total_user = pti.pti_total_user * PSUTIL_MACH_TIMEBASE_INFO.numer;
-    total_user /= PSUTIL_MACH_TIMEBASE_INFO.denom;
-    total_system = pti.pti_total_system * PSUTIL_MACH_TIMEBASE_INFO.numer;
-    total_system /= PSUTIL_MACH_TIMEBASE_INFO.denom;
+    // Match getrusage() ru_majflt and ru_minflt. getrusage() source:
+    // https://github.com/apple/darwin-xnu/blob/2ff845c2e033/bsd/kern/kern_resource.c#L1263-L1265
+    maj_faults = (unsigned long)pti.pti_pageins;
+    min_faults = (unsigned long)pti.pti_faults - maj_faults;
 
-    return Py_BuildValue(
-        "(ddKKkkkk)",
-        (float)total_user / 1000000000.0,  // (float) cpu user time
-        (float)total_system / 1000000000.0,  // (float) cpu sys time
-        // Note about memory: determining other mem stats on macOS is a mess:
-        // http://www.opensource.apple.com/source/top/top-67/libtop.c?txt
-        // I just give up.
-        // struct proc_regioninfo pri;
-        // psutil_proc_pidinfo(pid, PROC_PIDREGIONINFO, 0, &pri, sizeof(pri))
-        pti.pti_resident_size,  // (uns long long) rss
-        pti.pti_virtual_size,  // (uns long long) vms
-        pti.pti_faults,  // (uns long) number of page faults (pages)
-        pti.pti_pageins,  // (uns long) number of actual pageins (pages)
-        pti.pti_threadnum,  // (uns long) num threads
-        // Unvoluntary value seems not to be available;
-        // pti.pti_csw probably refers to the sum of the two;
-        // getrusage() numbers seems to confirm this theory.
-        pti.pti_csw  // (uns long) voluntary ctx switches
-    );
+    // clang-format off
+    // pti_total_user/system are in Mach ticks; hw.tbfrequency gives
+    // ticks/second and is not intercepted by Rosetta 2, unlike
+    // mach_timebase_info() which returns numer=1/denom=1 for x86_64
+    // processes on Apple Silicon, causing a 41.67x undercount there.
+    if (!pydict_add(dict, "cpu_utime", "d", (double)pti.pti_total_user / PSUTIL_HW_TBFREQUENCY)) goto error;
+    if (!pydict_add(dict, "cpu_stime", "d", (double)pti.pti_total_system / PSUTIL_HW_TBFREQUENCY)) goto error;
+    // Note about memory: determining other mem stats on macOS is a mess:
+    // http://www.opensource.apple.com/source/top/top-67/libtop.c?txt
+    // I just give up.
+    if (!pydict_add(dict, "rss", "K", pti.pti_resident_size)) goto error;
+    if (!pydict_add(dict, "vms", "K", pti.pti_virtual_size)) goto error;
+    if (!pydict_add(dict, "minor_faults", "k", min_faults)) goto error;
+    if (!pydict_add(dict, "major_faults", "k", maj_faults)) goto error;
+    if (!pydict_add(dict, "num_threads", "k", (unsigned long)pti.pti_threadnum)) goto error;
+    // Unvoluntary not available on macOS. `pti_csw` refers to the
+    // sum of voluntary + involuntary. getrusage() numbers confirm
+    // this theory.
+    if (!pydict_add(dict, "volctxsw", "k", (unsigned long)pti.pti_csw)) goto error;
+    // clang-format on
+
+    return dict;
+
+error:
+    Py_DECREF(dict);
+    return NULL;
 }
 
 
@@ -259,6 +276,60 @@ psutil_in_shared_region(mach_vm_address_t addr, cpu_type_t type) {
     }
 
     return base <= addr && addr < (base + size);
+}
+
+
+/*
+ * Return extended memory info via task_info(TASK_VM_INFO).
+ */
+PyObject *
+psutil_proc_memory_info_ex(PyObject *self, PyObject *args) {
+    pid_t pid;
+    mach_port_t task = MACH_PORT_NULL;
+    kern_return_t kr;
+    task_vm_info_data_t info;
+    mach_msg_type_number_t info_count = TASK_VM_INFO_COUNT;
+    PyObject *dict = PyDict_New();
+
+    if (!dict)
+        return NULL;
+    if (!PyArg_ParseTuple(args, _Py_PARSE_PID, &pid))
+        goto error;
+    if (psutil_task_for_pid(pid, &task) != 0)
+        goto error;
+
+    // Fetch multiple metrics. Fails with access denied for any PID not
+    // owned by us.
+    kr = task_info(task, TASK_VM_INFO, (task_info_t)&info, &info_count);
+    mach_port_deallocate(mach_task_self(), task);
+    task = MACH_PORT_NULL;
+    if (kr != KERN_SUCCESS) {
+        psutil_runtime_error("task_info(TASK_VM_INFO) syscall failed");
+        goto error;
+    }
+
+    // Fetch wired memory.
+    uint64_t wired_size = 0;
+    struct rusage_info_v0 ri;
+    if (proc_pid_rusage(pid, RUSAGE_INFO_V0, (rusage_info_t *)&ri) == 0)
+        wired_size = ri.ri_wired_size;
+    else
+        psutil_debug("proc_pid_rusage() failed (pid=%i)", pid);
+
+    // clang-format off
+    if (!pydict_add(dict, "peak_rss", "K", (unsigned long long)info.resident_size_peak)) goto error;
+    if (!pydict_add(dict, "rss_anon", "K", (unsigned long long)info.internal)) goto error;
+    if (!pydict_add(dict, "rss_file", "K", (unsigned long long)info.external)) goto error;
+    if (!pydict_add(dict, "wired", "K", (unsigned long long)wired_size)) goto error;
+    if (!pydict_add(dict, "compressed", "K", (unsigned long long)info.compressed)) goto error;
+    if (!pydict_add(dict, "phys_footprint", "K", (unsigned long long)info.phys_footprint)) goto error;
+    // clang-format on
+
+    return dict;
+
+error:
+    Py_DECREF(dict);
+    return NULL;
 }
 
 
@@ -382,7 +453,6 @@ psutil_proc_threads(PyObject *self, PyObject *args) {
     thread_basic_info_t basic_info_th;
     mach_msg_type_number_t thread_count, thread_info_count, j;
 
-    PyObject *py_tuple = NULL;
     PyObject *py_retlist = PyList_New(0);
 
     if (py_retlist == NULL)
@@ -432,19 +502,19 @@ psutil_proc_threads(PyObject *self, PyObject *args) {
         }
 
         basic_info_th = (thread_basic_info_t)thinfo_basic;
-        py_tuple = Py_BuildValue(
-            "Iff",
-            j + 1,
-            basic_info_th->user_time.seconds
-                + (float)basic_info_th->user_time.microseconds / 1000000.0,
-            basic_info_th->system_time.seconds
-                + (float)basic_info_th->system_time.microseconds / 1000000.0
-        );
-        if (!py_tuple)
+        if (!pylist_append_fmt(
+                py_retlist,
+                "Iff",
+                j + 1,
+                basic_info_th->user_time.seconds
+                    + (float)basic_info_th->user_time.microseconds / 1000000.0,
+                basic_info_th->system_time.seconds
+                    + (float)basic_info_th->system_time.microseconds
+                          / 1000000.0
+            ))
+        {
             goto error;
-        if (PyList_Append(py_retlist, py_tuple))
-            goto error;
-        Py_CLEAR(py_tuple);
+        }
     }
 
     // deallocate thread_list if it was allocated
@@ -466,7 +536,6 @@ psutil_proc_threads(PyObject *self, PyObject *args) {
     return py_retlist;
 
 error:
-    Py_XDECREF(py_tuple);
     Py_XDECREF(py_retlist);
 
     if (thread_list != NULL) {
@@ -503,7 +572,6 @@ psutil_proc_open_files(PyObject *self, PyObject *args) {
     struct proc_fdinfo *fdp_pointer;
     struct vnode_fdinfowithpath vi;
     PyObject *py_retlist = PyList_New(0);
-    PyObject *py_tuple = NULL;
     PyObject *py_path = NULL;
 
     if (py_retlist == NULL)
@@ -553,14 +621,12 @@ psutil_proc_open_files(PyObject *self, PyObject *args) {
             py_path = PyUnicode_DecodeFSDefault(vi.pvip.vip_path);
             if (!py_path)
                 goto error;
-            py_tuple = Py_BuildValue(
-                "(Oi)", py_path, (int)fdp_pointer->proc_fd
-            );
-            if (!py_tuple)
+            if (!pylist_append_fmt(
+                    py_retlist, "(Oi)", py_path, (int)fdp_pointer->proc_fd
+                ))
+            {
                 goto error;
-            if (PyList_Append(py_retlist, py_tuple))
-                goto error;
-            Py_CLEAR(py_tuple);
+            }
             Py_CLEAR(py_path);
             // --- /construct python list
         }
@@ -570,7 +636,6 @@ psutil_proc_open_files(PyObject *self, PyObject *args) {
     return py_retlist;
 
 error:
-    Py_XDECREF(py_tuple);
     Py_XDECREF(py_path);
     Py_DECREF(py_retlist);
     if (fds_pointer != NULL)
@@ -597,7 +662,6 @@ psutil_proc_net_connections(PyObject *self, PyObject *args) {
     struct socket_fdinfo si;
     const char *ntopret;
     PyObject *py_retlist = PyList_New(0);
-    PyObject *py_tuple = NULL;
     PyObject *py_laddr = NULL;
     PyObject *py_raddr = NULL;
     PyObject *py_af_filter = NULL;
@@ -627,7 +691,6 @@ psutil_proc_net_connections(PyObject *self, PyObject *args) {
         goto error;
 
     for (i = 0; i < num_fds; i++) {
-        py_tuple = NULL;
         py_laddr = NULL;
         py_raddr = NULL;
         fdp_pointer = &fds_pointer[i];
@@ -762,14 +825,21 @@ psutil_proc_net_connections(PyObject *self, PyObject *args) {
                 if (!py_raddr)
                     goto error;
 
-                py_tuple = Py_BuildValue(
-                    "(iiiNNi)", fd, family, type, py_laddr, py_raddr, state
-                );
-                if (!py_tuple)
+                if (!pylist_append_fmt(
+                        py_retlist,
+                        "(iiiNNi)",
+                        fd,
+                        family,
+                        type,
+                        py_laddr,
+                        py_raddr,
+                        state
+                    ))
+                {
                     goto error;
-                if (PyList_Append(py_retlist, py_tuple))
-                    goto error;
-                Py_CLEAR(py_tuple);
+                }
+                py_laddr = NULL;
+                py_raddr = NULL;
             }
             else if (family == AF_UNIX) {
                 py_laddr = PyUnicode_DecodeFSDefault(
@@ -783,20 +853,19 @@ psutil_proc_net_connections(PyObject *self, PyObject *args) {
                 if (!py_raddr)
                     goto error;
 
-                py_tuple = Py_BuildValue(
-                    "(iiiOOi)",
-                    fd,
-                    family,
-                    type,
-                    py_laddr,
-                    py_raddr,
-                    PSUTIL_CONN_NONE
-                );
-                if (!py_tuple)
+                if (!pylist_append_fmt(
+                        py_retlist,
+                        "(iiiOOi)",
+                        fd,
+                        family,
+                        type,
+                        py_laddr,
+                        py_raddr,
+                        PSUTIL_CONN_NONE
+                    ))
+                {
                     goto error;
-                if (PyList_Append(py_retlist, py_tuple))
-                    goto error;
-                Py_CLEAR(py_tuple);
+                }
                 Py_CLEAR(py_laddr);
                 Py_CLEAR(py_raddr);
             }
@@ -807,7 +876,6 @@ psutil_proc_net_connections(PyObject *self, PyObject *args) {
     return py_retlist;
 
 error:
-    Py_XDECREF(py_tuple);
     Py_XDECREF(py_laddr);
     Py_XDECREF(py_raddr);
     Py_DECREF(py_retlist);
@@ -851,7 +919,6 @@ psutil_proc_cmdline(PyObject *self, PyObject *args) {
     char *curr_arg;
     size_t argmax;
     PyObject *py_retlist = PyList_New(0);
-    PyObject *py_arg = NULL;
 
     if (py_retlist == NULL)
         return NULL;
@@ -899,12 +966,10 @@ psutil_proc_cmdline(PyObject *self, PyObject *args) {
     curr_arg = arg_ptr;
     while (arg_ptr < arg_end && nargs > 0) {
         if (*arg_ptr++ == '\0') {
-            py_arg = PyUnicode_DecodeFSDefault(curr_arg);
-            if (!py_arg)
+            if (!pylist_append_obj(
+                    py_retlist, PyUnicode_DecodeFSDefault(curr_arg)
+                ))
                 goto error;
-            if (PyList_Append(py_retlist, py_arg))
-                goto error;
-            Py_DECREF(py_arg);
             // iterate to next arg and decrement # of args
             curr_arg = arg_ptr;
             nargs--;
@@ -915,7 +980,6 @@ psutil_proc_cmdline(PyObject *self, PyObject *args) {
     return py_retlist;
 
 error:
-    Py_XDECREF(py_arg);
     Py_XDECREF(py_retlist);
     if (procargs != NULL)
         free(procargs);

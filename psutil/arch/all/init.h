@@ -128,8 +128,13 @@ int str_append(char *dst, size_t dst_size, const char *src);
 int str_copy(char *dst, size_t dst_size, const char *src);
 int str_format(char *buf, size_t size, const char *fmt, ...);
 
+int pydict_add(PyObject *dict, const char *key, const char *fmt, ...);
+int pylist_append_fmt(PyObject *list, const char *fmt, ...);
+int pylist_append_obj(PyObject *list, PyObject *obj);
+
 int psutil_badargs(const char *funcname);
 int psutil_setup(void);
+double psutil_usage_percent(double used, double total, int round_);
 
 // ====================================================================
 // --- Exposed to Python

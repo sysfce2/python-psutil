@@ -15,6 +15,7 @@ from psutil import MACOS
 from . import AARCH64
 from . import CI_TESTING
 from . import HAS_BATTERY
+from . import HAS_CPU_FREQ
 from . import TOLERANCE_DISK_USAGE
 from . import TOLERANCE_SYS_MEM
 from . import PsutilTestCase
@@ -52,7 +53,11 @@ def vm_stat(field):
 
 
 @pytest.mark.skipif(not MACOS, reason="MACOS only")
-class TestProcess(PsutilTestCase):
+class MacosTestCase(PsutilTestCase):
+    pass
+
+
+class TestProcess(MacosTestCase):
     @classmethod
     def setUpClass(cls):
         cls.pid = spawn_subproc().pid
@@ -73,8 +78,7 @@ class TestProcess(PsutilTestCase):
         assert year == time.strftime("%Y", time.localtime(start_psutil))
 
 
-@pytest.mark.skipif(not MACOS, reason="MACOS only")
-class TestSystemAPIs(PsutilTestCase):
+class TestSystemAPIs(MacosTestCase):
 
     # --- disk
 
@@ -113,8 +117,10 @@ class TestSystemAPIs(PsutilTestCase):
         num = sysctl("sysctl hw.physicalcpu")
         assert num == psutil.cpu_count(logical=False)
 
-    # TODO: remove this once 1892 is fixed
-    @pytest.mark.skipif(MACOS and AARCH64, reason="skipped due to #1892")
+    @pytest.mark.skipif(
+        MACOS and AARCH64 and not HAS_CPU_FREQ,
+        reason="not available on MACOS + AARCH64",
+    )
     def test_cpu_freq(self):
         freq = psutil.cpu_freq()
         assert freq.current * 1000 * 1000 == sysctl("sysctl hw.cpufrequency")
